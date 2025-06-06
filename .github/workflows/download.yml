@@ -1,0 +1,166 @@
+name: YouTube Downloader
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'YouTube URL'
+        required: true
+        type: string
+      format_type:
+        description: 'Format type: video or audio'
+        required: true
+        type: string
+      quality:
+        description: 'Quality: best, 1080, 720, 480, 360, mp3, m4a'
+        required: true
+        type: string
+      chat_id:
+        description: 'Telegram chat ID to send result'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  download-and-send:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install yt-dlp and ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          pip install yt-dlp
+
+      - name: Download video or audio
+        id: download
+        env:
+          URL: ${{ github.event.inputs.url }}
+          FORMAT: ${{ github.event.inputs.format_type }}
+          QUALITY: ${{ github.event.inputs.quality }}
+          CHAT_ID: ${{ github.event.inputs.chat_id }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        run: |
+          if [ "$FORMAT" = "video" ]; then
+            case "$QUALITY" in
+              best)  YT_FMT="bv*+ba/b" ;;
+              1080)  YT_FMT="bv*[height<=1080]+ba/b[height<=1080]/bv+ba/b" ;;
+              720)   YT_FMT="bv*[height<=720]+ba/b[height<=720]/bv+ba/b" ;;
+              480)   YT_FMT="bv*[height<=480]+ba/b[height<=480]/bv+ba/b" ;;
+              360)   YT_FMT="bv*[height<=360]+ba/b[height<=360]/bv+ba/b" ;;
+              *)     YT_FMT="bv*+ba/b" ;;
+            esac
+            yt-dlp -f "$YT_FMT" --merge-output-format mp4 \
+              -o "/tmp/output.%(ext)s" "$URL"
+          elif [ "$FORMAT" = "audio" ]; then
+            case "$QUALITY" in
+              mp3)
+                yt-dlp -x --audio-format mp3 --audio-quality 0 \
+                  -o "/tmp/output.%(ext)s" "$URL"
+                ;;
+              m4a)
+                yt-dlp -f "ba[ext=m4a]/ba/b" \
+                  -o "/tmp/output.%(ext)s" "$URL"
+                ;;
+              *)
+                yt-dlp -x --audio-format mp3 --audio-quality 0 \
+                  -o "/tmp/output.%(ext)s" "$URL"
+                ;;
+            esac
+          else
+            curl -f -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
+              -H "Content-Type: application/json" \
+              -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"❌ فرمت نامعتبر\"}"
+            exit 1
+          fi
+
+          OUTPUT_FILE=$(ls /tmp/output.* 2>/dev/null | head -1)
+          if [ -z "$OUTPUT_FILE" ]; then
+            curl -f -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
+              -H "Content-Type: application/json" \
+              -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"❌ خطا در دانلود - فایل یافت نشد.\"}"
+            exit 1
+          fi
+
+          echo "OUTPUT_FILE=$OUTPUT_FILE" >> $GITHUB_ENV
+          FILE_SIZE=$(stat -c%s "$OUTPUT_FILE")
+          echo "FILE_SIZE=$FILE_SIZE" >> $GITHUB_ENV
+
+          VIDEO_TITLE=$(yt-dlp --print title "$URL" 2>/dev/null || echo "YouTube Video")
+          echo "VIDEO_TITLE<<EOF" >> $GITHUB_ENV
+          echo "$VIDEO_TITLE" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: Send file to user via Telegram
+        if: success()
+        env:
+          CHAT_ID: ${{ github.event.inputs.chat_id }}
+          FORMAT: ${{ github.event.inputs.format_type }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          OUTPUT_FILE: ${{ env.OUTPUT_FILE }}
+          FILE_SIZE: ${{ env.FILE_SIZE }}
+          VIDEO_TITLE: ${{ env.VIDEO_TITLE }}
+        run: |
+          FILE_SIZE_MB=$((FILE_SIZE / 1048576))
+          FILE_SIZE_GB=$((FILE_SIZE / 1073741824))
+
+          if [ "$FILE_SIZE_GB" -ge 2 ]; then
+            MSG=$(jq -n \
+              --arg chat "$CHAT_ID" \
+              --arg size "$FILE_SIZE_GB" \
+              '{chat_id: $chat, text: ("❌ فایل بیش از " + $size + "GB است. لطفا کیفیت پایینتر انتخاب کنید.")}')
+            curl -f -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
+              -H "Content-Type: application/json" \
+              -d "$MSG"
+            exit 1
+          fi
+
+          if [ "$FILE_SIZE_MB" -le 50 ]; then
+            if [ "$FORMAT" = "video" ]; then
+              curl -f --retry 3 --retry-delay 10 -s \
+                -F "chat_id=$CHAT_ID" \
+                -F "video=@$OUTPUT_FILE" \
+                -F "caption=✅ $VIDEO_TITLE" \
+                -F "supports_streaming=true" \
+                "https://api.telegram.org/bot$BOT_TOKEN/sendVideo"
+            else
+              curl -f --retry 3 --retry-delay 10 -s \
+                -F "chat_id=$CHAT_ID" \
+                -F "audio=@$OUTPUT_FILE" \
+                -F "caption=✅ $VIDEO_TITLE" \
+                "https://api.telegram.org/bot$BOT_TOKEN/sendAudio"
+            fi
+          else
+            TAG="dl-$(date +%s)"
+            FILENAME=$(basename "$OUTPUT_FILE")
+            gh release create "$TAG" "$OUTPUT_FILE" \
+              --title "Download" \
+              --notes "YouTube download"
+            DL_URL="https://github.com/${{ github.repository }}/releases/download/$TAG/$FILENAME"
+
+            MSG=$(jq -n \
+              --arg chat "$CHAT_ID" \
+              --arg size "$FILE_SIZE_MB" \
+              --arg url "$DL_URL" \
+              --arg title "$VIDEO_TITLE" \
+              '{chat_id: $chat, text: ("✅ فایل بیش از 50MB است (" + $size + " MB).\n\n📥 لینک دانلود مستقیم:\n" + $url + "\n\n🎵 " + $title)}')
+            curl -f -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
+              -H "Content-Type: application/json" \
+              -d "$MSG"
+          fi
+
+      - name: Notify error on failure
+        if: failure()
+        env:
+          CHAT_ID: ${{ github.event.inputs.chat_id }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        run: |
+          curl -f -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
+            -H "Content-Type: application/json" \
+            -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"❌ خطا در دانلود. لطفا دوباره تلاش کنید یا کیفیت پایینتر انتخاب کنید.\"}"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f /tmp/output.*
