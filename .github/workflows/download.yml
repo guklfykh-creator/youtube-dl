@@ -19,6 +19,10 @@ on:
         description: 'Telegram chat ID to send result'
         required: true
         type: string
+      username:
+        description: 'Telegram username of target user (for MTProto peer resolution)'
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -27,6 +31,26 @@ jobs:
   download-and-send:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build uploader
+        run: |
+          cd cmd/uploader
+          go build -o ../../uploader .
+
+      - name: Decode session
+        run: |
+          echo "$TG_SESSION" | base64 -d > session.json
+          chmod 600 session.json
+        env:
+          TG_SESSION: ${{ secrets.TG_SESSION }}
+
       - name: Install yt-dlp and ffmpeg
         run: |
           sudo apt-get update
@@ -69,17 +93,19 @@ jobs:
                 ;;
             esac
           else
+            MSG=$(jq -n --arg chat "$CHAT_ID" \
+              '{chat_id: $chat, text: "❌ فرمت نامعتبر"}')
             curl -f -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
-              -H "Content-Type: application/json" \
-              -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"❌ فرمت نامعتبر\"}"
+              -H "Content-Type: application/json" -d "$MSG"
             exit 1
           fi
 
           OUTPUT_FILE=$(ls /tmp/output.* 2>/dev/null | head -1)
           if [ -z "$OUTPUT_FILE" ]; then
+            MSG=$(jq -n --arg chat "$CHAT_ID" \
+              '{chat_id: $chat, text: "❌ خطا در دانلود - فایل یافت نشد."}')
             curl -f -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
-              -H "Content-Type: application/json" \
-              -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"❌ خطا در دانلود - فایل یافت نشد.\"}"
+              -H "Content-Type: application/json" -d "$MSG"
             exit 1
           fi
 
@@ -92,17 +118,19 @@ jobs:
           echo "$VIDEO_TITLE" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
 
-      - name: Send file to user via Telegram
+      - name: Send file via MTProto (gotd/td)
         if: success()
         env:
+          TG_APP_ID: ${{ secrets.TG_APP_ID }}
+          TG_APP_HASH: ${{ secrets.TG_APP_HASH }}
+          TG_SESSION: ${{ secrets.TG_SESSION }}
           CHAT_ID: ${{ github.event.inputs.chat_id }}
+          USERNAME: ${{ github.event.inputs.username }}
           FORMAT: ${{ github.event.inputs.format_type }}
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           OUTPUT_FILE: ${{ env.OUTPUT_FILE }}
-          FILE_SIZE: ${{ env.FILE_SIZE }}
           VIDEO_TITLE: ${{ env.VIDEO_TITLE }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
         run: |
-          FILE_SIZE_MB=$((FILE_SIZE / 1048576))
           FILE_SIZE_GB=$((FILE_SIZE / 1073741824))
 
           if [ "$FILE_SIZE_GB" -ge 2 ]; then
@@ -111,43 +139,48 @@ jobs:
               --arg size "$FILE_SIZE_GB" \
               '{chat_id: $chat, text: ("❌ فایل بیش از " + $size + "GB است. لطفا کیفیت پایینتر انتخاب کنید.")}')
             curl -f -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
-              -H "Content-Type: application/json" \
-              -d "$MSG"
+              -H "Content-Type: application/json" -d "$MSG"
             exit 1
           fi
 
-          if [ "$FILE_SIZE_MB" -le 50 ]; then
-            if [ "$FORMAT" = "video" ]; then
-              curl -f --retry 3 --retry-delay 10 -s \
-                -F "chat_id=$CHAT_ID" \
-                -F "video=@$OUTPUT_FILE" \
-                -F "caption=✅ $VIDEO_TITLE" \
-                -F "supports_streaming=true" \
-                "https://api.telegram.org/bot$BOT_TOKEN/sendVideo"
-            else
-              curl -f --retry 3 --retry-delay 10 -s \
-                -F "chat_id=$CHAT_ID" \
-                -F "audio=@$OUTPUT_FILE" \
-                -F "caption=✅ $VIDEO_TITLE" \
-                "https://api.telegram.org/bot$BOT_TOKEN/sendAudio"
-            fi
-          else
-            TAG="dl-$(date +%s)"
-            FILENAME=$(basename "$OUTPUT_FILE")
-            gh release create "$TAG" "$OUTPUT_FILE" \
-              --title "Download" \
-              --notes "YouTube download"
-            DL_URL="https://github.com/${{ github.repository }}/releases/download/$TAG/$FILENAME"
+          echo "sending file via MTProto (gotd/td)..."
+          ./uploader \
+            --file "$OUTPUT_FILE" \
+            --chat-id "$CHAT_ID" \
+            --username "$USERNAME" \
+            --format "$FORMAT" \
+            --caption "✅ $VIDEO_TITLE" \
+            --session session.json
 
-            MSG=$(jq -n \
-              --arg chat "$CHAT_ID" \
-              --arg size "$FILE_SIZE_MB" \
-              --arg url "$DL_URL" \
-              --arg title "$VIDEO_TITLE" \
-              '{chat_id: $chat, text: ("✅ فایل بیش از 50MB است (" + $size + " MB).\n\n📥 لینک دانلود مستقیم:\n" + $url + "\n\n🎵 " + $title)}')
-            curl -f -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
-              -H "Content-Type: application/json" \
-              -d "$MSG"
+          if [ $? -ne 0 ]; then
+            echo "MTProto upload failed, trying Bot API fallback for files <=50MB..."
+            FILE_SIZE_MB=$((FILE_SIZE / 1048576))
+
+            if [ "$FILE_SIZE_MB" -le 50 ]; then
+              if [ "$FORMAT" = "video" ]; then
+                curl -f --retry 3 --retry-delay 10 -s \
+                  -F "chat_id=$CHAT_ID" \
+                  -F "video=@$OUTPUT_FILE" \
+                  -F "caption=✅ $VIDEO_TITLE" \
+                  -F "supports_streaming=true" \
+                  "https://api.telegram.org/bot$BOT_TOKEN/sendVideo"
+              else
+                curl -f --retry 3 --retry-delay 10 -s \
+                  -F "chat_id=$CHAT_ID" \
+                  -F "audio=@$OUTPUT_FILE" \
+                  -F "caption=✅ $VIDEO_TITLE" \
+                  "https://api.telegram.org/bot$BOT_TOKEN/sendAudio"
+              fi
+            else
+              MSG=$(jq -n \
+                --arg chat "$CHAT_ID" \
+                --arg size "$FILE_SIZE_MB" \
+                --arg title "$VIDEO_TITLE" \
+                '{chat_id: $chat, text: ("❌ ارسال فایل ناموفق بود (" + $size + " MB). لطفا دوباره تلاش کنید.")}')
+              curl -f -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
+                -H "Content-Type: application/json" -d "$MSG"
+              exit 1
+            fi
           fi
 
       - name: Notify error on failure
@@ -156,11 +189,13 @@ jobs:
           CHAT_ID: ${{ github.event.inputs.chat_id }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
         run: |
+          MSG=$(jq -n --arg chat "$CHAT_ID" \
+            '{chat_id: $chat, text: "❌ خطا در دانلود. لطفا دوباره تلاش کنید یا کیفیت پایینتر انتخاب کنید."}')
           curl -f -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
-            -H "Content-Type: application/json" \
-            -d "{\"chat_id\":\"$CHAT_ID\",\"text\":\"❌ خطا در دانلود. لطفا دوباره تلاش کنید یا کیفیت پایینتر انتخاب کنید.\"}"
+            -H "Content-Type: application/json" -d "$MSG"
 
       - name: Cleanup
         if: always()
         run: |
           rm -f /tmp/output.*
+          rm -f session.json

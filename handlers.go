@@ -127,9 +127,10 @@ func onQualitySelect(c tb.Context) error {
 	}
 
 	chatIDStr := fmt.Sprintf("%d", chatID)
+	username := c.Sender().Username
 
 	cfg := LoadConfig()
-	if err := TriggerWorkflow(cfg, session.URL, formatType, quality, chatIDStr); err != nil {
+	if err := TriggerWorkflow(cfg, session.URL, formatType, quality, chatIDStr, username); err != nil {
 		log.Printf("workflow trigger failed: %v (url=%s format=%s quality=%s chatID=%s)",
 			err, session.URL, formatType, quality, chatIDStr)
 		return c.Send("❌ خطا در شروع دانلود. لطفا دوباره تلاش کنید.")
@@ -137,8 +138,8 @@ func onQualitySelect(c tb.Context) error {
 
 	DelSession(chatID)
 
-	log.Printf("workflow triggered: url=%s format=%s quality=%s chatID=%s",
-		session.URL, formatType, quality, chatIDStr)
+	log.Printf("workflow triggered: url=%s format=%s quality=%s chatID=%s username=%s",
+		session.URL, formatType, quality, chatIDStr, username)
 
 	return c.Send("⏳ در حال دانلود... لطفا صبر کنید. فایل به زودی برایتان ارسال خواهد شد.")
 }

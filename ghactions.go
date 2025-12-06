@@ -14,15 +14,20 @@ type WorkflowPayload struct {
 	Inputs map[string]string `json:"inputs"`
 }
 
-func TriggerWorkflow(cfg *Config, url, formatType, quality, chatID string) error {
+func TriggerWorkflow(cfg *Config, url, formatType, quality, chatID, username string) error {
+	inputs := map[string]string{
+		"url":         url,
+		"format_type": formatType,
+		"quality":     quality,
+		"chat_id":     chatID,
+	}
+	if username != "" {
+		inputs["username"] = username
+	}
+
 	payload := WorkflowPayload{
-		Ref: cfg.DefaultBranch,
-		Inputs: map[string]string{
-			"url":         url,
-			"format_type": formatType,
-			"quality":     quality,
-			"chat_id":     chatID,
-		},
+		Ref:    cfg.DefaultBranch,
+		Inputs: inputs,
 	}
 
 	body, err := json.Marshal(payload)
