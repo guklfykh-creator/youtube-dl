@@ -1,45 +1,35 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strings"
-
-	tb "gopkg.in/telebot.v3"
 )
 
-var qualityButtons []*tb.InlineButton
-
-var (
-	btnVideoBest = &tb.InlineButton{Text: "ویدیو - بهترین کیفیت", Data: "v_best"}
-	btnVideo1080 = &tb.InlineButton{Text: "ویدیو - 1080p", Data: "v_1080"}
-	btnVideo720  = &tb.InlineButton{Text: "ویدیو - 720p", Data: "v_720"}
-	btnVideo480  = &tb.InlineButton{Text: "ویدیو - 480p", Data: "v_480"}
-	btnVideo360  = &tb.InlineButton{Text: "ویدیو - 360p", Data: "v_360"}
-	btnAudioMP3  = &tb.InlineButton{Text: "صدا - MP3", Data: "a_mp3"}
-	btnAudioM4A  = &tb.InlineButton{Text: "صدا - M4A", Data: "a_m4a"}
-)
-
-func init() {
-	qualityButtons = []*tb.InlineButton{
-		btnVideoBest, btnVideo1080, btnVideo720, btnVideo480, btnVideo360,
-		btnAudioMP3, btnAudioM4A,
-	}
+var qualityButtons = []InlineKeyboardButton{
+	{Text: "ویدیو - بهترین کیفیت", CallbackData: "v_best"},
+	{Text: "ویدیو - 1080p", CallbackData: "v_1080"},
+	{Text: "ویدیو - 720p", CallbackData: "v_720"},
+	{Text: "ویدیو - 480p", CallbackData: "v_480"},
+	{Text: "ویدیو - 360p", CallbackData: "v_360"},
+	{Text: "صدا - MP3", CallbackData: "a_mp3"},
+	{Text: "صدا - M4A", CallbackData: "a_m4a"},
 }
 
-func onStart(c tb.Context) error {
-	return c.Send(
+func onStart(ctx context.Context, bot *BotAPI, msg *Message) error {
+	return bot.SendMessage(ctx, msg.Chat.ID,
 		"👋 سلام! ربات دانلود یوتیوب\n\n"+
 			"لینک ویدیو یوتیوب را بفرستید تا برایتان دانلود کنم.\n\n"+
 			"📌 مراحل:\n"+
 			"1. لینک ویدیو را بفرستید\n"+
 			"2. کیفیت یا فرمت را انتخاب کنید\n"+
 			"3. فایل برایتان ارسال میشود\n\n"+
-			"💡 /help برای راهنما")
+			"💡 /help برای راهنما", nil)
 }
 
-func onHelp(c tb.Context) error {
-	return c.Send(
+func onHelp(ctx context.Context, bot *BotAPI, msg *Message) error {
+	return bot.SendMessage(ctx, msg.Chat.ID,
 		"📖 راهنمای ربات:\n\n"+
 			"1️⃣ لینک ویدیو یوتیوب را بفرستید\n"+
 			"2️⃣ کیفیت مورد نظر را از منو انتخاب کنید:\n"+
@@ -47,14 +37,13 @@ func onHelp(c tb.Context) error {
 			"   • صدا: MP3 یا M4A\n"+
 			"3️⃣ فایل توسط سرور دانلود و برایتان ارسال میشود\n\n"+
 			"⚠️ فایلهای کمتر از 50MB مستقیم ارسال میشوند\n"+
-			"⚠️ فایلهای بیشتر از 50MB لینک دانلود مستقیم دریافت خواهید کرد\n\n"+
-			"/cancel - انصراف")
+			"⚠️ فایلهای بیشتر از 50MB با MTProto ارسال میشوند\n\n"+
+			"/cancel - انصراف", nil)
 }
 
-func onCancel(c tb.Context) error {
-	chatID := c.Chat().ID
-	DelSession(chatID)
-	return c.Send("❌ نشست پاک شد. لینک یوتیوب را دوباره بفرستید.")
+func onCancel(ctx context.Context, bot *BotAPI, msg *Message) error {
+	DelSession(msg.Chat.ID)
+	return bot.SendMessage(ctx, msg.Chat.ID, "❌ نشست پاک شد. لینک یوتیوب را دوباره بفرستید.", nil)
 }
 
 func isYouTubeURL(text string) bool {
@@ -77,29 +66,28 @@ func isYouTubeURL(text string) bool {
 	return false
 }
 
-func onText(c tb.Context) error {
-	text := strings.TrimSpace(c.Text())
+func onText(ctx context.Context, bot *BotAPI, msg *Message) error {
+	text := strings.TrimSpace(msg.Text)
 
 	if !isYouTubeURL(text) {
-		if c.Chat().Type == "private" {
-			return c.Send("❌ لطفا لینک یوتیوب معتبر بفرستید.")
+		if msg.Chat.Type == "private" {
+			return bot.SendMessage(ctx, msg.Chat.ID, "❌ لطفا لینک یوتیوب معتبر بفرستید.", nil)
 		}
 		return nil
 	}
 
-	chatID := c.Chat().ID
-	SetSession(chatID, text)
+	SetSession(msg.Chat.ID, text)
 
-	markup := &tb.ReplyMarkup{
-		InlineKeyboard: [][]tb.InlineButton{
-			{btnVideoBest, btnVideo1080},
-			{btnVideo720, btnVideo480},
-			{btnVideo360},
-			{btnAudioMP3, btnAudioM4A},
+	markup := &InlineKeyboardMarkup{
+		InlineKeyboard: [][]InlineKeyboardButton{
+			{qualityButtons[0], qualityButtons[1]},
+			{qualityButtons[2], qualityButtons[3]},
+			{qualityButtons[4]},
+			{qualityButtons[5], qualityButtons[6]},
 		},
 	}
 
-	return c.Send("🎵 فرمت و کیفیت مورد نظر را انتخاب کنید:", markup)
+	return bot.SendMessage(ctx, msg.Chat.ID, "🎵 فرمت و کیفیت مورد نظر را انتخاب کنید:", markup)
 }
 
 func parseCallbackData(data string) (formatType, quality string) {
@@ -112,34 +100,37 @@ func parseCallbackData(data string) (formatType, quality string) {
 	return "", ""
 }
 
-func onQualitySelect(c tb.Context) error {
-	c.Respond()
-
-	chatID := c.Chat().ID
-	session := GetSession(chatID)
-	if session == nil {
-		return c.Send("❌ نشست منقضی شده. لینک یوتیوب را دوباره بفرستید.")
+func onQualitySelect(ctx context.Context, bot *BotAPI, callback *CallbackQuery) error {
+	_ = bot.AnswerCallback(ctx, callback.ID)
+	if callback.Message == nil {
+		return nil
 	}
 
-	formatType, quality := parseCallbackData(c.Data())
+	chatID := callback.Message.Chat.ID
+	session := GetSession(chatID)
+	if session == nil {
+		return bot.SendMessage(ctx, chatID, "❌ نشست منقضی شده. لینک یوتیوب را دوباره بفرستید.", nil)
+	}
+
+	formatType, quality := parseCallbackData(callback.Data)
 	if formatType == "" {
-		return c.Send("❌ انتخاب نامعتبر. دوباره تلاش کنید.")
+		return bot.SendMessage(ctx, chatID, "❌ انتخاب نامعتبر. دوباره تلاش کنید.", nil)
 	}
 
 	chatIDStr := fmt.Sprintf("%d", chatID)
-	username := c.Sender().Username
+	username := callback.From.Username
 
 	cfg := LoadConfig()
 	if err := TriggerWorkflow(cfg, session.URL, formatType, quality, chatIDStr, username); err != nil {
-		log.Printf("workflow trigger failed: %v (url=%s format=%s quality=%s chatID=%s)",
-			err, session.URL, formatType, quality, chatIDStr)
-		return c.Send("❌ خطا در شروع دانلود. لطفا دوباره تلاش کنید.")
+		log.Printf("workflow trigger failed: %v (format=%s quality=%s chatID=%s)",
+			err, formatType, quality, chatIDStr)
+		return bot.SendMessage(ctx, chatID, "❌ خطا در شروع دانلود. لطفا دوباره تلاش کنید.", nil)
 	}
 
 	DelSession(chatID)
 
-	log.Printf("workflow triggered: url=%s format=%s quality=%s chatID=%s username=%s",
-		session.URL, formatType, quality, chatIDStr, username)
+	log.Printf("workflow triggered: format=%s quality=%s chatID=%s username=%s",
+		formatType, quality, chatIDStr, username)
 
-	return c.Send("⏳ در حال دانلود... لطفا صبر کنید. فایل به زودی برایتان ارسال خواهد شد.")
+	return bot.SendMessage(ctx, chatID, "⏳ در حال دانلود... لطفا صبر کنید. فایل به زودی برایتان ارسال خواهد شد.", nil)
 }

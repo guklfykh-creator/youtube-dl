@@ -1,0 +1,7 @@
+.env
+session.json
+*.session.json
+uploader
+dist/
+.gocache/
+.gomodcache/

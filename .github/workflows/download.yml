@@ -44,11 +44,14 @@ jobs:
           cd cmd/uploader
           go build -o ../../uploader .
 
-      - name: Decode session
+      - name: Validate Telegram secrets
         run: |
-          echo "$TG_SESSION" | base64 -d > session.json
-          chmod 600 session.json
+          test -n "$TG_APP_ID"
+          test -n "$TG_APP_HASH"
+          test -n "$TG_SESSION"
         env:
+          TG_APP_ID: ${{ secrets.TG_APP_ID }}
+          TG_APP_HASH: ${{ secrets.TG_APP_HASH }}
           TG_SESSION: ${{ secrets.TG_SESSION }}
 
       - name: Install yt-dlp and ffmpeg
@@ -144,6 +147,7 @@ jobs:
           fi
 
           echo "sending file via MTProto (gotd/td)..."
+          set +e
           ./uploader \
             --file "$OUTPUT_FILE" \
             --chat-id "$CHAT_ID" \
@@ -151,8 +155,10 @@ jobs:
             --format "$FORMAT" \
             --caption "✅ $VIDEO_TITLE" \
             --session session.json
+          UPLOAD_STATUS=$?
+          set -e
 
-          if [ $? -ne 0 ]; then
+          if [ "$UPLOAD_STATUS" -ne 0 ]; then
             echo "MTProto upload failed, trying Bot API fallback for files <=50MB..."
             FILE_SIZE_MB=$((FILE_SIZE / 1048576))
 

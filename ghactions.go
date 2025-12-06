@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	urlpkg "net/url"
 	"time"
 )
 
@@ -35,8 +36,8 @@ func TriggerWorkflow(cfg *Config, url, formatType, quality, chatID, username str
 		return fmt.Errorf("json marshal: %w", err)
 	}
 
-	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/actions/dispatches",
-		cfg.RepoOwner, cfg.RepoName)
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/actions/workflows/%s/dispatches",
+		urlpkg.PathEscape(cfg.RepoOwner), urlpkg.PathEscape(cfg.RepoName), urlpkg.PathEscape(cfg.WorkflowFile))
 
 	req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(body))
 	if err != nil {
@@ -65,7 +66,7 @@ func TriggerWorkflow(cfg *Config, url, formatType, quality, chatID, username str
 	case 401:
 		return fmt.Errorf("unauthorized: check GH_TOKEN — response: %s", string(respBody))
 	case 404:
-		return fmt.Errorf("repo or workflow not found: check GH_REPO_OWNER/GH_REPO_NAME — response: %s", string(respBody))
+		return fmt.Errorf("repo or workflow not found: check GH_REPO_OWNER/GH_REPO_NAME/GH_WORKFLOW_FILE — response: %s", string(respBody))
 	case 422:
 		return fmt.Errorf("validation failed: workflow not found in repo or inputs mismatch — response: %s", string(respBody))
 	default:

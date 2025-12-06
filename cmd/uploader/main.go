@@ -11,12 +11,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gotd/td/session"
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/auth"
-	"github.com/gotd/td/telegram/auth/qrlogin"
 	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
-	"github.com/gotd/td/session"
 )
 
 var (
@@ -31,7 +30,7 @@ func main() {
 	formatType := flag.String("format", "video", "format: video, audio, document")
 	caption := flag.String("caption", "", "message caption")
 	doAuth := flag.Bool("auth", false, "run interactive phone+code authentication")
-	doQR := flag.Bool("qr", false, "run QR code authentication")
+	doQR := flag.Bool("qr", false, "deprecated: QR auth is not supported by this helper")
 	sessionPath := flag.String("session", "session.json", "session file path")
 	flag.Parse()
 
@@ -63,13 +62,9 @@ func main() {
 		}
 	}
 
-	client, err := telegram.NewClient(appID, appHash, telegram.Settings{
-		Session: session.FileSession(*sessionPath),
+	client := telegram.NewClient(appID, appHash, telegram.Options{
+		SessionStorage: &session.FileStorage{Path: *sessionPath},
 	})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "client creation failed: %v\n", err)
-		os.Exit(1)
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
@@ -79,17 +74,15 @@ func main() {
 			return runPhoneAuth(ctx, client)
 		}
 		if *doQR {
-			return runQRAuth(ctx, client)
+			return fmt.Errorf("--qr is not supported; use --auth or go run ./cmd/sessiontui")
 		}
 
-		me, err := client.API().UsersGetFullUser(ctx, &tg.UsersGetFullUserRequest{
-			ID: &tg.InputUserSelf{},
-		})
+		me, err := client.Self(ctx)
 		if err != nil {
 			return fmt.Errorf("not authenticated (run with --auth or --qr first): %w", err)
 		}
 
-		fmt.Printf("authenticated as user %d (%s)\n", me.FullUser.ID, me.FullUser.FirstName)
+		fmt.Printf("authenticated as user %d (%s)\n", me.ID, me.FirstName)
 
 		if *filePath == "" || *chatID == 0 {
 			return fmt.Errorf("--file and --chat-id are required for sending")
@@ -126,7 +119,7 @@ func (t terminalAuth) Phone(ctx context.Context) (string, error) {
 	return input, nil
 }
 
-func (t terminalAuth) Code(ctx context.Context) (string, error) {
+func (t terminalAuth) Code(ctx context.Context, sentCode *tg.AuthSentCode) (string, error) {
 	fmt.Print("Enter verification code: ")
 	var code string
 	_, _ = fmt.Scan(&code)
@@ -140,39 +133,33 @@ func (t terminalAuth) Password(ctx context.Context) (string, error) {
 	return password, nil
 }
 
-func (t terminalAuth) SignUp(ctx context.Context) (auth.SignUp, error) {
+func (t terminalAuth) AcceptTermsOfService(ctx context.Context, tos tg.HelpTermsOfService) error {
+	fmt.Println("Telegram terms of service must be accepted to continue.")
+	return nil
+}
+
+func (t terminalAuth) SignUp(ctx context.Context) (auth.UserInfo, error) {
 	fmt.Print("Enter first name: ")
 	var first string
 	_, _ = fmt.Scan(&first)
 	fmt.Print("Enter last name: ")
 	var last string
 	_, _ = fmt.Scan(&last)
-	return auth.SignUp{FirstName: first, LastName: last}, nil
+	return auth.UserInfo{FirstName: first, LastName: last}, nil
 }
 
 func runPhoneAuth(ctx context.Context, client *telegram.Client) error {
 	flow := auth.NewFlow(terminalAuth{}, auth.SendCodeOptions{})
-	if err := flow.Run(ctx, client); err != nil {
+	if err := flow.Run(ctx, client.Auth()); err != nil {
 		return fmt.Errorf("phone auth failed: %w", err)
 	}
 	fmt.Println("authentication successful, session saved")
 	return nil
 }
 
-func runQRAuth(ctx context.Context, client *telegram.Client) error {
-	qr := qrlogin.NewFlow(client, qrlogin.Terminal{}, appID, appHash)
-	if err := qr.Login(ctx); err != nil {
-		return fmt.Errorf("qr auth failed: %w", err)
-	}
-	fmt.Println("qr authentication successful, session saved")
-	return nil
-}
-
 func resolvePeer(ctx context.Context, client *telegram.Client, chatID int64, username string) (tg.InputPeerClass, error) {
 	if username != "" {
-		result, err := client.API().ContactsResolveUsername(ctx, &tg.ContactsResolveUsernameRequest{
-			Username: strings.TrimPrefix(username, "@"),
-		})
+		result, err := client.API().ContactsResolveUsername(ctx, strings.TrimPrefix(username, "@"))
 		if err != nil {
 			return nil, fmt.Errorf("resolve username '%s': %w", username, err)
 		}
@@ -182,7 +169,7 @@ func resolvePeer(ctx context.Context, client *telegram.Client, chatID int64, use
 			if !ok {
 				continue
 			}
-			if user.ID == int(chatID) {
+			if user.ID == chatID {
 				return &tg.InputPeerUser{UserID: user.ID, AccessHash: user.AccessHash}, nil
 			}
 		}
@@ -220,7 +207,7 @@ func resolvePeer(ctx context.Context, client *telegram.Client, chatID int64, use
 			if !ok {
 				continue
 			}
-			if user.ID == int(chatID) {
+			if user.ID == chatID {
 				return &tg.InputPeerUser{UserID: user.ID, AccessHash: user.AccessHash}, nil
 			}
 		}
@@ -229,15 +216,15 @@ func resolvePeer(ctx context.Context, client *telegram.Client, chatID int64, use
 	}
 
 	if chatID < -1000000000 {
-		channelID := int(-chatID - 1000000000)
-		chResult, err := client.API().ChannelsGetChannels(ctx, &tg.ChannelsGetChannelsRequest{
-			ID: []tg.InputChannelClass{&tg.InputChannel{ChannelID: channelID}},
+		channelID := -chatID - 1000000000
+		chResult, err := client.API().ChannelsGetChannels(ctx, []tg.InputChannelClass{
+			&tg.InputChannel{ChannelID: channelID},
 		})
 		if err != nil {
 			return nil, fmt.Errorf("get channel %d: %w", channelID, err)
 		}
 
-		for _, c := range chResult.Channels {
+		for _, c := range chResult.GetChats() {
 			ch, ok := c.(*tg.Channel)
 			if !ok {
 				continue
@@ -250,20 +237,24 @@ func resolvePeer(ctx context.Context, client *telegram.Client, chatID int64, use
 		return nil, fmt.Errorf("channel %d not found", channelID)
 	}
 
-	return &tg.InputPeerChat{ChatID: int(-chatID)}, nil
+	return &tg.InputPeerChat{ChatID: -chatID}, nil
 }
 
 func sendFile(ctx context.Context, client *telegram.Client, peer tg.InputPeerClass, filePath, formatType, caption string) error {
 	filename := filepath.Base(filePath)
 	ext := strings.ToLower(filepath.Ext(filePath))
 
-	up := uploader.New(client.API())
+	up := uploader.NewUploader(client.API())
 	uploaded, err := up.FromPath(ctx, filePath)
 	if err != nil {
 		return fmt.Errorf("upload file: %w", err)
 	}
 
-	fmt.Printf("uploaded %s (%d bytes)\n", filename, uploaded.Size())
+	fileInfo, err := os.Stat(filePath)
+	if err != nil {
+		return fmt.Errorf("stat file: %w", err)
+	}
+	fmt.Printf("uploaded %s (%d bytes)\n", filename, fileInfo.Size())
 
 	var mimeType string
 	var attrs []tg.DocumentAttributeClass
@@ -294,10 +285,16 @@ func sendFile(ctx context.Context, client *telegram.Client, peer tg.InputPeerCla
 		Attributes: attrs,
 	}
 
+	randomID, err := client.RandInt64()
+	if err != nil {
+		return fmt.Errorf("generate random id: %w", err)
+	}
+
 	req := &tg.MessagesSendMediaRequest{
-		Peer:    peer,
-		Media:   media,
-		Message: caption,
+		Peer:     peer,
+		Media:    media,
+		Message:  caption,
+		RandomID: randomID,
 	}
 
 	_, err = client.API().MessagesSendMedia(ctx, req)
@@ -341,9 +338,9 @@ func peerID(peer tg.InputPeerClass) int64 {
 	case *tg.InputPeerUser:
 		return int64(p.UserID)
 	case *tg.InputPeerChat:
-		return -int64(p.ChatID)
+		return -p.ChatID
 	case *tg.InputPeerChannel:
-		return -int64(p.ChannelID + 1000000000)
+		return -(p.ChannelID + 1000000000)
 	default:
 		return 0
 	}
