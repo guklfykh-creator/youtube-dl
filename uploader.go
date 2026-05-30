@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/base64"
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,87 +22,66 @@ var (
 	appHash string
 )
 
-func main() {
-	filePath := flag.String("file", "", "path to file to send")
-	chatID := flag.Int64("chat-id", 0, "target telegram chat id")
-	username := flag.String("username", "", "target telegram username (without @)")
-	formatType := flag.String("format", "video", "format: video, audio, document")
-	caption := flag.String("caption", "", "message caption")
-	doAuth := flag.Bool("auth", false, "run interactive phone+code authentication")
-	doQR := flag.Bool("qr", false, "deprecated: QR auth is not supported by this helper")
-	sessionPath := flag.String("session", "session.json", "session file path")
-	flag.Parse()
-
+func runUploader(filePath string, chatID int64, username, formatType, caption string, doAuth, doQR bool, sessionPath string) error {
 	appIDStr := os.Getenv("TG_APP_ID")
 	appHash = os.Getenv("TG_APP_HASH")
 	sessionB64 := os.Getenv("TG_SESSION")
 
 	if appIDStr == "" || appHash == "" {
-		fmt.Fprintf(os.Stderr, "TG_APP_ID and TG_APP_HASH env vars are required\n")
-		os.Exit(1)
+		return fmt.Errorf("TG_APP_ID and TG_APP_HASH env vars are required")
 	}
 
 	appIDInt, err := strconv.Atoi(appIDStr)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "TG_APP_ID must be a valid integer\n")
-		os.Exit(1)
+		return fmt.Errorf("TG_APP_ID must be a valid integer")
 	}
 	appID = appIDInt
 
 	if sessionB64 != "" {
 		data, err := base64.StdEncoding.DecodeString(sessionB64)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "session base64 decode failed: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("session base64 decode failed: %w", err)
 		}
-		if err := os.WriteFile(*sessionPath, data, 0600); err != nil {
-			fmt.Fprintf(os.Stderr, "session file write failed: %v\n", err)
-			os.Exit(1)
+		if err := os.WriteFile(sessionPath, data, 0600); err != nil {
+			return fmt.Errorf("session file write failed: %w", err)
 		}
 	}
 
 	client := telegram.NewClient(appID, appHash, telegram.Options{
-		SessionStorage: &session.FileStorage{Path: *sessionPath},
+		SessionStorage: &session.FileStorage{Path: sessionPath},
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
-	err = client.Run(ctx, func(ctx context.Context) error {
-		if *doAuth {
+	return client.Run(ctx, func(ctx context.Context) error {
+		if doAuth {
 			return runPhoneAuth(ctx, client)
 		}
-		if *doQR {
-			return fmt.Errorf("--qr is not supported; use --auth or go run ./cmd/sessiontui")
+		if doQR {
+			return fmt.Errorf("--qr is not supported; use --auth")
 		}
 
 		me, err := client.Self(ctx)
 		if err != nil {
-			return fmt.Errorf("not authenticated (run with --auth or --qr first): %w", err)
+			return fmt.Errorf("not authenticated (run with --auth first): %w", err)
 		}
 
 		fmt.Printf("authenticated as user %d (%s)\n", me.ID, me.FirstName)
 
-		if *filePath == "" || *chatID == 0 {
+		if filePath == "" || chatID == 0 {
 			return fmt.Errorf("--file and --chat-id are required for sending")
 		}
 
-		peer, err := resolvePeer(ctx, client, *chatID, *username)
+		peer, err := resolvePeer(ctx, client, chatID, username)
 		if err != nil {
 			return fmt.Errorf("peer resolution failed: %w", err)
 		}
 
-		fmt.Printf("resolved peer for chat_id %d\n", *chatID)
+		fmt.Printf("resolved peer for chat_id %d\n", chatID)
 
-		return sendFile(ctx, client, peer, *filePath, *formatType, *caption)
+		return sendFile(ctx, client, peer, filePath, formatType, caption)
 	})
-
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Println("done")
 }
 
 type terminalAuth struct{}

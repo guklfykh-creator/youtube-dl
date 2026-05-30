@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -56,9 +58,33 @@ type InlineKeyboardButton struct {
 }
 
 func main() {
+	filePath := flag.String("file", "", "path to file to send")
+	chatID := flag.Int64("chat-id", 0, "target telegram chat id")
+	username := flag.String("username", "", "target telegram username (without @)")
+	formatType := flag.String("format", "video", "format: video, audio, document")
+	caption := flag.String("caption", "", "message caption")
+	doAuth := flag.Bool("auth", false, "run interactive phone+code authentication")
+	doQR := flag.Bool("qr", false, "deprecated: QR auth is not supported by this helper")
+	sessionPath := flag.String("session", "session.json", "session file path")
+	flag.Parse()
+
+	if *filePath != "" || *chatID != 0 || *doAuth || *doQR {
+		if err := runUploader(*filePath, *chatID, *username, *formatType, *caption, *doAuth, *doQR, *sessionPath); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if err := runBot(); err != nil {
+		log.Fatalf("bot stopped: %v", err)
+	}
+}
+
+func runBot() error {
 	cfg := LoadConfig()
 	if err := cfg.Validate(); err != nil {
-		log.Fatalf("config error: %v", err)
+		return fmt.Errorf("config error: %w", err)
 	}
 
 	bot := &BotAPI{
@@ -67,9 +93,7 @@ func main() {
 	}
 
 	log.Println("bot started successfully")
-	if err := bot.Poll(context.Background()); err != nil {
-		log.Fatalf("bot stopped: %v", err)
-	}
+	return bot.Poll(context.Background())
 }
 
 func (b *BotAPI) Poll(ctx context.Context) error {
