@@ -1,9 +1,7 @@
 <div align="center">
 
   <h1>
-    <img src="https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Objects/Television.png" alt="📺" width="40" height="40" />
-    YouTube DL Bot
-    <img src="https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Smileys/Cat%20Face.png" alt="🐱" width="40" height="40" />
+    YouTube DL Bot 
   </h1>
 
   <p><strong>Telegram Bot for downloading YouTube videos & audio via GitHub Actions + MTProto</strong></p>
@@ -15,16 +13,7 @@
     <img src="https://img.shields.io/badge/MTProto-2.0-26A5E4?style=for-the-badge" alt="MTProto" />
   </p>
 
-  <p>
-    <img src="https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Hand%20gestures/Rightward%20Hand.png" alt="👉" width="20" height="20" />
-    <a href="#how-it-works">How It Works</a>
-    <img src="https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Hand%20gestures/Rightward%20Hand.png" alt="👉" width="20" height="20" />
-    <a href="#quick-start">Quick Start</a>
-    <img src="https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Hand%20gestures/Rightward%20Hand.png" alt="👉" width="20" height="20" />
-    <a href="#configuration">Configuration</a>
-    <img src="https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Hand%20gestures/Rightward%20Hand.png" alt="👉" width="20" height="20" />
-    <a href="#architecture">Architecture</a>
-  </p>
+
 
   <br/>
 
@@ -77,7 +66,7 @@
 3. **User** picks a quality (e.g. 720p video or MP3 audio)
 4. **Bot** triggers a `workflow_dispatch` on GitHub Actions via the GitHub API
 5. **GitHub Actions** runs `yt-dlp` + `ffmpeg` to download and encode the media
-6. **Uploader** (`cmd/uploader`) sends the file to the user via MTProto (gotd/td), or falls back to Bot API for ≤ 50 MB
+6. **Uploader mode** in the same binary sends the file to the user via MTProto (gotd/td), or falls back to Bot API for ≤ 50 MB
 7. **User** receives the file directly in Telegram
 
 ---
@@ -120,7 +109,6 @@ In your GitHub repository → **Settings → Secrets and variables → Actions**
 
 ```sh
 # First-time: run auth to create a session
-cd cmd/uploader
 go run . --auth --session session.json
 
 # Then base64-encode the session for GitHub Secrets
@@ -147,8 +135,8 @@ All settings are loaded from environment variables (or `.env` file):
 | `GH_REPO_NAME` | **Yes** | — | GitHub repo name (e.g. `youtube-dl`) |
 | `GH_WORKFLOW_FILE` | No | `download.yml` | Workflow filename in `.github/workflows/` |
 | `GH_DEFAULT_BRANCH` | No | `main` | Branch to dispatch the workflow on |
-| `TG_APP_ID` | **Yes*** | — | Telegram API ID (used by uploader) |
-| `TG_APP_HASH` | **Yes*** | — | Telegram API Hash (used by uploader) |
+| `TG_APP_ID` | **Yes*** | — | Telegram API ID (used by uploader mode) |
+| `TG_APP_HASH` | **Yes*** | — | Telegram API Hash (used by uploader mode) |
 | `TG_SESSION` | **Yes*** | — | Base64-encoded MTProto session |
 | `TG_PHONE` | No | — | Phone number for interactive auth |
 
@@ -168,7 +156,7 @@ All settings are loaded from environment variables (or `.env` file):
 | `state.go` | In-memory session store with 5-min TTL |
 | `ghactions.go` | GitHub Actions `workflow_dispatch` API call |
 
-### MTProto Uploader (`cmd/uploader/main.go`)
+### MTProto Uploader Mode (`uploader.go`)
 
 | Feature | Detail |
 |---------|--------|
@@ -182,7 +170,7 @@ All settings are loaded from environment variables (or `.env` file):
 
 | Step | Action |
 |------|--------|
-| Checkout & Build | Checks repo, builds uploader binary |
+| Checkout & Build | Checks repo, builds the main binary |
 | Validate Secrets | Ensures `TG_APP_ID`, `TG_APP_HASH`, `TG_SESSION` exist |
 | Install tools | Installs `yt-dlp` + `ffmpeg` on Ubuntu |
 | Download | Runs `yt-dlp` with selected format/quality |
@@ -204,11 +192,10 @@ All settings are loaded from environment variables (or `.env` file):
 
 ## <img src="https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Objects/Gear.png" alt="⚙️" width="22" height="22" /> MTProto Auth Setup
 
-The MTProto uploader needs an authenticated Telegram session. Create one locally:
+The MTProto uploader mode needs an authenticated Telegram session. Create one locally:
 
 ```sh
 # Option A: Phone authentication (recommended)
-cd cmd/uploader
 go run . --auth --session session.json
 
 # Option B: Set TG_PHONE env var for non-interactive auth
@@ -234,10 +221,6 @@ Set-Content -Path "session_b64.txt" -Value $b64
 ```sh
 # Build bot server
 go build -o youtube-dl-bot .
-
-# Build MTProto uploader
-cd cmd/uploader
-go build -o ../../uploader .
 ```
 
 ---
@@ -270,13 +253,3 @@ go build -o ../../uploader .
 ## <img src="https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Hand%20gestures/Handshake.png" alt="🤝" width="22" height="22" /> License
 
 This project is open source. See the [LICENSE](LICENSE) file for details.
-
----
-
-<div align="center">
-
-  <img src="https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Smileys/Star-struck.png" alt="🤩" width="20" height="20" />
-  Made with Go + gotd/td + yt-dlp
-  <img src="https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Smileys/Star-struck.png" alt="🤩" width="20" height="20" />
-
-</div>

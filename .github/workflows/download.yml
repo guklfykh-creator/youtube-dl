@@ -39,10 +39,8 @@ jobs:
         with:
           go-version: '1.22'
 
-      - name: Build uploader
-        run: |
-          cd cmd/uploader
-          go build -o ../../uploader .
+      - name: Build binary
+        run: go build -o youtube-dl-bot .
 
       - name: Validate Telegram secrets
         run: |
@@ -148,7 +146,7 @@ jobs:
 
           echo "sending file via MTProto (gotd/td)..."
           set +e
-          ./uploader \
+          ./youtube-dl-bot \
             --file "$OUTPUT_FILE" \
             --chat-id "$CHAT_ID" \
             --username "$USERNAME" \
