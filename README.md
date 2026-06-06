@@ -127,6 +127,31 @@ Your `GH_TOKEN` must have permission to dispatch workflows and manage repository
 go run .
 ```
 
+### 6. Deploy on Railway
+
+This bot is a long-running worker that uses Telegram polling. It does not expose an HTTP server, so it does not need a public Railway domain or `PORT` binding.
+
+1. Create a Railway project from this GitHub repository.
+2. Use the default Railpack builder. `railway.json` pins the deploy start command to `./out`.
+3. In Railway → Service → Variables, add the same values you use locally:
+
+```env
+BOT_TOKEN=
+GH_TOKEN=
+GH_REPO_OWNER=
+GH_REPO_NAME=
+GH_WORKFLOW_FILE=download.yml
+GH_DEFAULT_BRANCH=main
+TG_APP_ID=
+TG_APP_HASH=
+TG_SESSION=
+```
+
+4. Make sure `GH_TOKEN` can dispatch workflows and update repository Actions secrets.
+5. Deploy the service. Do not add a public domain unless you later replace polling with webhooks.
+
+`BOT_TOKEN`, `TG_APP_ID`, `TG_APP_HASH`, and `TG_SESSION` are still read from the Railway environment and synced to GitHub Actions secrets automatically before each workflow run.
+
 ---
 
 ## Configuration
