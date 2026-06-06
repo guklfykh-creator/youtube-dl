@@ -120,7 +120,7 @@ func runSessionSetup(cfg *Config, sessionPath string) error {
 
 	fmt.Println("=== Telegram Session Setup ===")
 	fmt.Println("This will authenticate your Telegram account and generate a session string")
-	fmt.Println("that can be used as TG_SESSION in .env and GitHub Secrets.")
+	fmt.Println("that can be used as TG_SESSION in .env.")
 	fmt.Println()
 
 	if phone == "" {
@@ -169,7 +169,6 @@ func runSessionSetup(cfg *Config, sessionPath string) error {
 
 	fmt.Println("Copy the above value and:")
 	fmt.Println("  1. Set TG_SESSION=<value> in your .env file")
-	fmt.Println("  2. Add it as a GitHub repository secret named TG_SESSION")
 
 	fmt.Print("\nDo you want to automatically update .env with TG_SESSION? (y/n): ")
 	var answer string
