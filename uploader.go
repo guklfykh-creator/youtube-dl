@@ -17,28 +17,14 @@ import (
 	"github.com/gotd/td/tg"
 )
 
-var (
-	appID   int
-	appHash string
-)
-
-func runUploader(filePath string, chatID int64, username, formatType, caption string, doAuth, doQR bool, sessionPath string) error {
-	appIDStr := os.Getenv("TG_APP_ID")
-	appHash = os.Getenv("TG_APP_HASH")
-	sessionB64 := os.Getenv("TG_SESSION")
-
-	if appIDStr == "" || appHash == "" {
-		return fmt.Errorf("TG_APP_ID and TG_APP_HASH env vars are required")
-	}
-
-	appIDInt, err := strconv.Atoi(appIDStr)
+func runUploader(cfg *Config, filePath string, chatID int64, username, formatType, caption string, sessionPath string) error {
+	appIDInt, err := strconv.Atoi(cfg.TGAppID)
 	if err != nil {
 		return fmt.Errorf("TG_APP_ID must be a valid integer")
 	}
-	appID = appIDInt
 
-	if sessionB64 != "" {
-		data, err := base64.StdEncoding.DecodeString(sessionB64)
+	if cfg.TGSession != "" {
+		data, err := base64.StdEncoding.DecodeString(cfg.TGSession)
 		if err != nil {
 			return fmt.Errorf("session base64 decode failed: %w", err)
 		}
@@ -47,7 +33,7 @@ func runUploader(filePath string, chatID int64, username, formatType, caption st
 		}
 	}
 
-	client := telegram.NewClient(appID, appHash, telegram.Options{
+	client := telegram.NewClient(appIDInt, cfg.TGAppHash, telegram.Options{
 		SessionStorage: &session.FileStorage{Path: sessionPath},
 	})
 
@@ -55,16 +41,9 @@ func runUploader(filePath string, chatID int64, username, formatType, caption st
 	defer cancel()
 
 	return client.Run(ctx, func(ctx context.Context) error {
-		if doAuth {
-			return runPhoneAuth(ctx, client)
-		}
-		if doQR {
-			return fmt.Errorf("--qr is not supported; use --auth")
-		}
-
 		me, err := client.Self(ctx)
 		if err != nil {
-			return fmt.Errorf("not authenticated (run with --auth first): %w", err)
+			return fmt.Errorf("not authenticated (run --setup-session first): %w", err)
 		}
 
 		fmt.Printf("authenticated as user %d (%s)\n", me.ID, me.FirstName)
@@ -84,12 +63,13 @@ func runUploader(filePath string, chatID int64, username, formatType, caption st
 	})
 }
 
-type terminalAuth struct{}
+type terminalAuth struct {
+	phone string
+}
 
 func (t terminalAuth) Phone(ctx context.Context) (string, error) {
-	phone := os.Getenv("TG_PHONE")
-	if phone != "" {
-		return phone, nil
+	if t.phone != "" {
+		return t.phone, nil
 	}
 	fmt.Print("Enter phone number (international format, e.g. +989123456789): ")
 	var input string
@@ -98,14 +78,14 @@ func (t terminalAuth) Phone(ctx context.Context) (string, error) {
 }
 
 func (t terminalAuth) Code(ctx context.Context, sentCode *tg.AuthSentCode) (string, error) {
-	fmt.Print("Enter verification code: ")
+	fmt.Print("Enter verification code sent to your Telegram: ")
 	var code string
 	_, _ = fmt.Scan(&code)
 	return code, nil
 }
 
 func (t terminalAuth) Password(ctx context.Context) (string, error) {
-	fmt.Print("Enter 2FA password: ")
+	fmt.Print("Enter 2FA password (press Enter if you don't have one): ")
 	var password string
 	_, _ = fmt.Scan(&password)
 	return password, nil
@@ -126,13 +106,116 @@ func (t terminalAuth) SignUp(ctx context.Context) (auth.UserInfo, error) {
 	return auth.UserInfo{FirstName: first, LastName: last}, nil
 }
 
-func runPhoneAuth(ctx context.Context, client *telegram.Client) error {
-	flow := auth.NewFlow(terminalAuth{}, auth.SendCodeOptions{})
-	if err := flow.Run(ctx, client.Auth()); err != nil {
-		return fmt.Errorf("phone auth failed: %w", err)
+func runSessionSetup(cfg *Config, sessionPath string) error {
+	if cfg.TGAppID == "" || cfg.TGAppHash == "" {
+		return fmt.Errorf("TG_APP_ID and TG_APP_HASH are required in .env before running --setup-session")
 	}
-	fmt.Println("authentication successful, session saved")
+
+	appIDInt, err := strconv.Atoi(cfg.TGAppID)
+	if err != nil {
+		return fmt.Errorf("TG_APP_ID must be a valid integer")
+	}
+
+	phone := cfg.TGPhone
+
+	fmt.Println("=== Telegram Session Setup ===")
+	fmt.Println("This will authenticate your Telegram account and generate a session string")
+	fmt.Println("that can be used as TG_SESSION in .env and GitHub Secrets.")
+	fmt.Println()
+
+	if phone == "" {
+		fmt.Print("Enter phone number (international format, e.g. +989123456789): ")
+		_, _ = fmt.Scan(&phone)
+	}
+
+	client := telegram.NewClient(appIDInt, cfg.TGAppHash, telegram.Options{
+		SessionStorage: &session.FileStorage{Path: sessionPath},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	flow := auth.NewFlow(terminalAuth{phone: phone}, auth.SendCodeOptions{})
+
+	err = client.Run(ctx, func(ctx context.Context) error {
+		if err := flow.Run(ctx, client.Auth()); err != nil {
+			return fmt.Errorf("phone auth failed: %w", err)
+		}
+
+		me, err := client.Self(ctx)
+		if err != nil {
+			return fmt.Errorf("verify self: %w", err)
+		}
+
+		fmt.Printf("\nAuthenticated successfully as %s (ID: %d)\n", me.FirstName, me.ID)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	sessionData, err := os.ReadFile(sessionPath)
+	if err != nil {
+		return fmt.Errorf("read session file: %w", err)
+	}
+
+	sessionB64 := base64.StdEncoding.EncodeToString(sessionData)
+
+	fmt.Println()
+	fmt.Println("=== Your TG_SESSION value ===")
+	fmt.Println()
+	fmt.Println(sessionB64)
+	fmt.Println()
+
+	fmt.Println("Copy the above value and:")
+	fmt.Println("  1. Set TG_SESSION=<value> in your .env file")
+	fmt.Println("  2. Add it as a GitHub repository secret named TG_SESSION")
+
+	fmt.Print("\nDo you want to automatically update .env with TG_SESSION? (y/n): ")
+	var answer string
+	_, _ = fmt.Scan(&answer)
+
+	if strings.ToLower(answer) == "y" || strings.ToLower(answer) == "yes" {
+		if err := updateEnvFile(".env", "TG_SESSION", sessionB64); err != nil {
+			return fmt.Errorf("update .env failed: %w", err)
+		}
+		fmt.Println("TG_SESSION has been written to .env file successfully.")
+	} else {
+		fmt.Println("Skipping .env update. Set TG_SESSION manually.")
+	}
+
 	return nil
+}
+
+func updateEnvFile(path, key, value string) error {
+	lines, err := readEnvLines(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	found := false
+	for i, line := range lines {
+		stripped := strings.TrimSpace(line)
+		if strings.HasPrefix(stripped, key+"=") {
+			lines[i] = key + "=" + value
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		lines = append(lines, key+"="+value)
+	}
+
+	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0600)
+}
+
+func readEnvLines(path string) ([]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return strings.Split(string(data), "\n"), nil
 }
 
 func resolvePeer(ctx context.Context, client *telegram.Client, chatID int64, username string) (tg.InputPeerClass, error) {

@@ -14,6 +14,10 @@ type Config struct {
 	RepoName      string
 	WorkflowFile  string
 	DefaultBranch string
+	TGAppID       string
+	TGAppHash     string
+	TGSession     string
+	TGPhone       string
 }
 
 func LoadConfig() *Config {
@@ -26,6 +30,10 @@ func LoadConfig() *Config {
 		RepoName:      os.Getenv("GH_REPO_NAME"),
 		WorkflowFile:  envOr("GH_WORKFLOW_FILE", "download.yml"),
 		DefaultBranch: envOr("GH_DEFAULT_BRANCH", "main"),
+		TGAppID:       os.Getenv("TG_APP_ID"),
+		TGAppHash:     os.Getenv("TG_APP_HASH"),
+		TGSession:     os.Getenv("TG_SESSION"),
+		TGPhone:       os.Getenv("TG_PHONE"),
 	}
 }
 

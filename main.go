@@ -63,13 +63,22 @@ func main() {
 	username := flag.String("username", "", "target telegram username (without @)")
 	formatType := flag.String("format", "video", "format: video, audio, document")
 	caption := flag.String("caption", "", "message caption")
-	doAuth := flag.Bool("auth", false, "run interactive phone+code authentication")
-	doQR := flag.Bool("qr", false, "deprecated: QR auth is not supported by this helper")
+	doSetupSession := flag.Bool("setup-session", false, "run interactive session setup: authenticate via phone number and output TG_SESSION value")
 	sessionPath := flag.String("session", "session.json", "session file path")
 	flag.Parse()
 
-	if *filePath != "" || *chatID != 0 || *doAuth || *doQR {
-		if err := runUploader(*filePath, *chatID, *username, *formatType, *caption, *doAuth, *doQR, *sessionPath); err != nil {
+	cfg := LoadConfig()
+
+	if *doSetupSession {
+		if err := runSessionSetup(cfg, *sessionPath); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if *filePath != "" || *chatID != 0 {
+		if err := runUploader(cfg, *filePath, *chatID, *username, *formatType, *caption, *sessionPath); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
