@@ -1,0 +1,11 @@
+.git
+.github
+.env
+.env.*
+!.env.example
+session.json
+*.session.json
+dist/
+*.exe
+.gocache/
+.gomodcache/

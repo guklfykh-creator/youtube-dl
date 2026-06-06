@@ -9,7 +9,9 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -101,54 +103,113 @@ func runBot() error {
 		client: &http.Client{Timeout: 35 * time.Second},
 	}
 
-	log.Println("bot started successfully")
-	return bot.Poll(context.Background())
-}
-
-func (b *BotAPI) Poll(ctx context.Context) error {
-	var offset int64
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		updates, err := b.GetUpdates(ctx, offset)
-		if err != nil {
-			log.Printf("get updates failed: %v", err)
-			time.Sleep(3 * time.Second)
-			continue
-		}
-
-		for _, update := range updates {
-			offset = update.UpdateID + 1
-			if err := b.HandleUpdate(ctx, update); err != nil {
-				log.Printf("handle update failed: %v", err)
-			}
-		}
-	}
-}
-
-func (b *BotAPI) GetUpdates(ctx context.Context, offset int64) ([]Update, error) {
-	var result struct {
-		OK          bool     `json:"ok"`
-		Description string   `json:"description"`
-		Result      []Update `json:"result"`
-	}
-
-	err := b.Call(ctx, "getUpdates", map[string]any{
-		"offset":  offset,
-		"timeout": 25,
-	}, &result)
+	webhookURL, err := cfg.WebhookURL()
 	if err != nil {
-		return nil, err
+		return err
+	}
+	if err := bot.SetWebhook(context.Background(), webhookURL, cfg.TelegramWebhookSecret()); err != nil {
+		return fmt.Errorf("set webhook: %w", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+	mux.HandleFunc(cfg.WebhookPath, bot.WebhookHandler(cfg.TelegramWebhookSecret()))
+
+	server := &http.Server{
+		Addr:              ":" + cfg.Port,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+	}
+
+	log.Printf("bot webhook server started on :%s path=%s", cfg.Port, cfg.WebhookPath)
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		return err
+	}
+
+	return nil
+}
+
+func (c *Config) WebhookURL() (string, error) {
+	domain := strings.TrimSpace(c.WebhookDomain)
+	if domain == "" {
+		return "", fmt.Errorf("WEBHOOK_DOMAIN env is required")
+	}
+	if !strings.HasPrefix(domain, "https://") && !strings.HasPrefix(domain, "http://") {
+		domain = "https://" + domain
+	}
+
+	baseURL, err := url.Parse(domain)
+	if err != nil {
+		return "", fmt.Errorf("parse WEBHOOK_DOMAIN: %w", err)
+	}
+	if baseURL.Scheme != "https" {
+		return "", fmt.Errorf("WEBHOOK_DOMAIN must use https for Telegram webhooks")
+	}
+	if baseURL.Host == "" {
+		return "", fmt.Errorf("WEBHOOK_DOMAIN must include a host")
+	}
+
+	baseURL.Path = strings.TrimRight(baseURL.Path, "/") + c.WebhookPath
+	baseURL.RawQuery = ""
+	baseURL.Fragment = ""
+
+	return baseURL.String(), nil
+}
+
+func (b *BotAPI) SetWebhook(ctx context.Context, webhookURL, secretToken string) error {
+	payload := map[string]any{
+		"url":                  webhookURL,
+		"secret_token":         secretToken,
+		"drop_pending_updates": true,
+		"allowed_updates":      []string{"message", "callback_query"},
+	}
+
+	var result struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+	}
+	if err := b.Call(ctx, "setWebhook", payload, &result); err != nil {
+		return err
 	}
 	if !result.OK {
-		return nil, fmt.Errorf("telegram getUpdates failed: %s", result.Description)
+		return fmt.Errorf("telegram setWebhook failed: %s", result.Description)
 	}
-	return result.Result, nil
+	return nil
+}
+
+func (b *BotAPI) WebhookHandler(secretToken string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if r.Header.Get("X-Telegram-Bot-Api-Secret-Token") != secretToken {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		var update Update
+		if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			if err := b.HandleUpdate(ctx, update); err != nil {
+				log.Printf("handle webhook update failed: %v", err)
+			}
+		}()
+	}
 }
 
 func (b *BotAPI) HandleUpdate(ctx context.Context, update Update) error {

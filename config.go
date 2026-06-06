@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"strings"
@@ -18,6 +20,10 @@ type Config struct {
 	TGAppHash     string
 	TGSession     string
 	TGPhone       string
+	WebhookDomain string
+	WebhookPath   string
+	WebhookSecret string
+	Port          string
 }
 
 func LoadConfig() *Config {
@@ -34,6 +40,10 @@ func LoadConfig() *Config {
 		TGAppHash:     os.Getenv("TG_APP_HASH"),
 		TGSession:     os.Getenv("TG_SESSION"),
 		TGPhone:       os.Getenv("TG_PHONE"),
+		WebhookDomain: os.Getenv("WEBHOOK_DOMAIN"),
+		WebhookPath:   envOr("WEBHOOK_PATH", "/telegram/webhook"),
+		WebhookSecret: os.Getenv("WEBHOOK_SECRET_TOKEN"),
+		Port:          envOr("PORT", "8080"),
 	}
 }
 
@@ -53,7 +63,24 @@ func (c *Config) Validate() error {
 	if c.WorkflowFile == "" {
 		return fmt.Errorf("GH_WORKFLOW_FILE env is required")
 	}
+	if c.WebhookDomain == "" {
+		return fmt.Errorf("WEBHOOK_DOMAIN env is required")
+	}
+	if c.WebhookPath == "" || !strings.HasPrefix(c.WebhookPath, "/") {
+		return fmt.Errorf("WEBHOOK_PATH must start with /")
+	}
+	if c.Port == "" {
+		return fmt.Errorf("PORT env is required")
+	}
 	return nil
+}
+
+func (c *Config) TelegramWebhookSecret() string {
+	if c.WebhookSecret != "" {
+		return c.WebhookSecret
+	}
+	sum := sha256.Sum256([]byte(c.BotToken))
+	return hex.EncodeToString(sum[:])
 }
 
 func envOr(key, fallback string) string {

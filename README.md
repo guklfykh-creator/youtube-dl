@@ -27,7 +27,9 @@
 - **Audio extraction** — MP3 & M4A formats
 - **MTProto upload** — sends files up to 2 GB via gotd/td
 - **Bot API fallback** — files ≤ 50 MB sent via Telegram Bot API
-- **Secure** — secrets stay in server-side `.env`; the bot encrypts and syncs runtime-only GitHub Actions secrets automatically
+- **Webhook mode** — receives Telegram updates via HTTPS webhook (no polling)
+- **Healthcheck** — `/healthz` endpoint for Railway and monitoring
+- **Secure** — webhook secret token verification; secrets stay in server-side `.env`
 - **Session timeout** — 5 min auto-expiry for pending quality selections
 - **Persian UI** — all bot messages in Farsi
 - **Interactive session setup** — `--setup-session` command to authenticate and generate `TG_SESSION`
@@ -41,31 +43,32 @@
 │  User    │─────▶│  Telegram Bot │─────▶│  GitHub Actions   │─────▶│  yt-dlp   │
 │ (Telegram)│◀────│  (Go server)  │◀────│  (download.yml)   │◀────│  + ffmpeg │
 └──────────┘      └──────────────┘      └──────────────────┘      └───────────┘
-     │                   │                       │                       │
-     │  1. Send URL      │                       │                       │
-     │──────────────────▶│                       │                       │
-     │                   │  2. Show quality menu  │                       │
-     │◀──────────────────│                       │                       │
-     │  3. Pick quality  │                       │                       │
-     │──────────────────▶│                       │                       │
-     │                   │  4. Dispatch workflow  │                       │
-     │                   │──────────────────────▶│                       │
-     │                   │                       │  5. Download & encode │
-     │                   │                       │──────────────────────▶│
-     │                   │                       │                       │
-     │                   │                       │  6. Upload via MTProto│
-     │                   │                       │◀──────────────────────│
-     │  7. Receive file  │                       │                       │
-     │◀──────────────────│                       │                       │
+      │                   │                       │                       │
+      │  1. Send URL      │                       │                       │
+      │──────────────────▶│                       │                       │
+      │                   │  2. Show quality menu  │                       │
+      │◀──────────────────│                       │                       │
+      │  3. Pick quality  │                       │                       │
+      │──────────────────▶│                       │                       │
+      │                   │  4. Dispatch workflow  │                       │
+      │                   │──────────────────────▶│                       │
+      │                   │                       │  5. Download & encode │
+      │                   │                       │──────────────────────▶│
+      │                   │                       │                       │
+      │                   │                       │  6. Upload via MTProto│
+      │                   │                       │◀──────────────────────│
+      │  7. Receive file  │                       │                       │
+      │◀──────────────────│                       │                       │
 ```
 
 1. **User** sends a YouTube URL to the Telegram bot
-2. **Bot** shows an inline keyboard with quality/format choices
-3. **User** picks a quality (e.g. 720p video or MP3 audio)
-4. **Bot** triggers a `workflow_dispatch` on GitHub Actions via the GitHub API
-5. **GitHub Actions** runs `yt-dlp` + `ffmpeg` to download and encode the media
-6. **Uploader mode** in the same binary sends the file to the user via MTProto (gotd/td), or falls back to Bot API for ≤ 50 MB
-7. **User** receives the file directly in Telegram
+2. **Telegram** pushes the update to the bot server via HTTPS webhook
+3. **Bot** shows an inline keyboard with quality/format choices
+4. **User** picks a quality (e.g. 720p video or MP3 audio)
+5. **Telegram** pushes the callback via webhook; **Bot** triggers a `workflow_dispatch` on GitHub Actions
+6. **GitHub Actions** runs `yt-dlp` + `ffmpeg` to download and encode the media
+7. **Uploader mode** in the same binary sends the file to the user via MTProto (gotd/td), or falls back to Bot API for ≤ 50 MB
+8. **User** receives the file directly in Telegram
 
 ---
 
@@ -121,18 +124,26 @@ Then it fetches the repository Actions public key from GitHub, encrypts each val
 
 Your `GH_TOKEN` must have permission to dispatch workflows and manage repository Actions secrets.
 
-### 5. Run the bot
+### 5. Run the bot locally
+
+The bot runs an HTTP server that receives Telegram updates via webhook. For local testing you need a publicly reachable URL (e.g. via [ngrok](https://ngrok.com) or a similar tunnel):
 
 ```sh
-go run .
+# Example: tunnel local port 8080 to a public HTTPS URL
+ngrok http 8080
+
+# Set WEBHOOK_DOMAIN to the ngrok URL and start the bot
+WEBHOOK_DOMAIN=https://xxxx.ngrok-free.app go run .
 ```
+
+The bot will call Telegram's `setWebhook` on startup, pointing to `WEBHOOK_DOMAIN` + `WEBHOOK_PATH`.
 
 ### 6. Deploy on Railway
 
-This bot is a long-running worker that uses Telegram polling. It does not expose an HTTP server, so it does not need a public Railway domain or `PORT` binding.
+The bot exposes an HTTP server with webhook and healthcheck endpoints. Railway must assign a **public domain** so Telegram can deliver updates to the webhook URL.
 
 1. Create a Railway project from this GitHub repository.
-2. Use the default Railpack builder. `railway.json` pins the deploy start command to `./out`.
+2. Use the default Railpack builder. `railway.json` pins the deploy start command to `./out` and sets `healthcheckPath` to `/healthz`.
 3. In Railway → Service → Variables, add the same values you use locally:
 
 ```env
@@ -145,10 +156,15 @@ GH_DEFAULT_BRANCH=main
 TG_APP_ID=
 TG_APP_HASH=
 TG_SESSION=
+WEBHOOK_DOMAIN=
+WEBHOOK_PATH=/telegram/webhook
+WEBHOOK_SECRET_TOKEN=
+PORT=
 ```
 
-4. Make sure `GH_TOKEN` can dispatch workflows and update repository Actions secrets.
-5. Deploy the service. Do not add a public domain unless you later replace polling with webhooks.
+4. In Railway → Service → Networking, **generate a public domain** (e.g. `your-service.up.railway.app`). Set `WEBHOOK_DOMAIN` to `https://your-service.up.railway.app`.
+5. Make sure `GH_TOKEN` can dispatch workflows and update repository Actions secrets.
+6. Deploy the service. The bot will call `setWebhook` on startup and start receiving updates.
 
 `BOT_TOKEN`, `TG_APP_ID`, `TG_APP_HASH`, and `TG_SESSION` are still read from the Railway environment and synced to GitHub Actions secrets automatically before each workflow run.
 
@@ -173,6 +189,15 @@ GH_REPO_NAME=
 GH_WORKFLOW_FILE=download.yml
 GH_DEFAULT_BRANCH=main
 
+# Telegram webhook public domain.
+# Use your Railway public domain, for example:
+# WEBHOOK_DOMAIN=https://your-service.up.railway.app
+WEBHOOK_DOMAIN=
+WEBHOOK_PATH=/telegram/webhook
+
+# Optional. If empty, the app derives a stable secret from BOT_TOKEN.
+WEBHOOK_SECRET_TOKEN=
+
 # MTProto uploader secrets. Keep these in this server-side .env only.
 # The bot syncs them to GitHub Actions secrets automatically before each workflow run.
 TG_APP_ID=
@@ -188,6 +213,10 @@ TG_SESSION=
 | `GH_REPO_NAME` | **Yes** | — | GitHub repo name (e.g. `youtube-dl`) |
 | `GH_WORKFLOW_FILE` | No | `download.yml` | Workflow filename in `.github/workflows/` |
 | `GH_DEFAULT_BRANCH` | No | `main` | Branch to dispatch the workflow on |
+| `WEBHOOK_DOMAIN` | **Yes** | — | Public HTTPS domain where Telegram sends updates (e.g. `https://your-service.up.railway.app`) |
+| `WEBHOOK_PATH` | No | `/telegram/webhook` | URL path for the webhook endpoint |
+| `WEBHOOK_SECRET_TOKEN` | No | derived from `BOT_TOKEN` | Secret token for verifying webhook requests from Telegram; auto-generated from `BOT_TOKEN` SHA-256 if not set |
+| `PORT` | No | `8080` | HTTP server listen port; Railway provides this automatically |
 | `TG_APP_ID` | **Yes** | — | Telegram API ID from my.telegram.org |
 | `TG_APP_HASH` | **Yes** | — | Telegram API Hash from my.telegram.org |
 | `TG_SESSION` | **Yes** | — | Base64-encoded MTProto session (generate with `--setup-session`) |
@@ -240,11 +269,19 @@ Copy the base64 string and set it as `TG_SESSION` in `.env`.
 
 | File | Responsibility |
 |------|----------------|
-| `main.go` | Bot API types, polling loop, CLI flags (`--setup-session`, `--file`, `--chat-id`) |
+| `main.go` | Bot API types, webhook server, `setWebhook` on startup, CLI flags (`--setup-session`, `--file`, `--chat-id`), healthcheck `/healthz` |
 | `handlers.go` | `/start`, `/help`, `/cancel`, URL detection, quality selection |
-| `config.go` | Environment loading, `.env` parser, validation (all env vars: BOT_TOKEN, GH_*, TG_*) |
+| `config.go` | Environment loading, `.env` parser, validation (all env vars: BOT_TOKEN, GH_*, TG_*, WEBHOOK_*, PORT) |
 | `state.go` | In-memory session store with 5-min TTL |
 | `ghactions.go` | GitHub Actions `workflow_dispatch` API call |
+
+### Webhook Flow
+
+1. On startup, the bot calls Telegram `setWebhook` with `WEBHOOK_DOMAIN` + `WEBHOOK_PATH` and the secret token.
+2. An HTTP server listens on `PORT` with two routes:
+   - **`/healthz`** — returns `200 ok` for Railway healthchecks and monitoring.
+   - **`WEBHOOK_PATH`** — receives POST requests from Telegram, verifies the `X-Telegram-Bot-Api-Secret-Token` header, decodes the update, and dispatches handlers asynchronously.
+3. Each update is processed in a background goroutine with a 2-minute timeout.
 
 ### MTProto Uploader Mode (`uploader.go`)
 
@@ -277,6 +314,8 @@ Copy the base64 string and set it as `TG_SESSION` in `.env`.
 - `GH_TOKEN` only used server-side to dispatch workflows and sync encrypted Actions secrets; never sent to Actions
 - `BOT_TOKEN`, `TG_APP_ID`, `TG_APP_HASH`, and `TG_SESSION` are read from server-side `.env` and encrypted with GitHub's repository Actions public key before being stored as Actions secrets
 - `TG_SESSION` is written to disk only during upload
+- Webhook requests are verified via `X-Telegram-Bot-Api-Secret-Token` header; unmatched requests get `401`
+- `WEBHOOK_SECRET_TOKEN` is auto-derived from `BOT_TOKEN` SHA-256 if not explicitly set
 - Workflow inputs contain only `url`, `format_type`, `quality`, `chat_id`, `username` — no secrets
 - Session files cleaned up in `always()` step
 - `--setup-session` asks before writing to `.env` and uses file permission `0600`
