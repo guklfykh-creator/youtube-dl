@@ -96,15 +96,24 @@ type encryptedSecretPayload struct {
 
 func SyncWorkflowSecrets(cfg *Config, client *http.Client) error {
 	required := map[string]string{
-		"BOT_TOKEN":   cfg.BotToken,
-		"TG_APP_ID":   cfg.TGAppID,
-		"TG_APP_HASH": cfg.TGAppHash,
-		"TG_SESSION":  cfg.TGSession,
+		"BOT_TOKEN":      cfg.BotToken,
+		"TG_APP_ID":      cfg.TGAppID,
+		"TG_APP_HASH":    cfg.TGAppHash,
+		"TG_SESSION":     cfg.TGSession,
+		"YT_COOKIES_B64": cfg.YTCookiesB64,
 	}
 
 	for name, value := range required {
 		if strings.TrimSpace(value) == "" {
+			if name == "YT_COOKIES_B64" {
+				continue
+			}
 			return fmt.Errorf("%s env is required for GitHub Actions upload", name)
+		}
+		if name == "YT_COOKIES_B64" {
+			if _, err := base64.StdEncoding.DecodeString(value); err != nil {
+				return fmt.Errorf("YT_COOKIES_B64 must be valid base64: %w", err)
+			}
 		}
 	}
 
@@ -114,6 +123,9 @@ func SyncWorkflowSecrets(cfg *Config, client *http.Client) error {
 	}
 
 	for name, value := range required {
+		if name == "YT_COOKIES_B64" && strings.TrimSpace(value) == "" {
+			continue
+		}
 		if err := putRepoSecret(cfg, client, publicKey, name, value); err != nil {
 			return err
 		}

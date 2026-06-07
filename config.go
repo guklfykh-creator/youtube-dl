@@ -20,6 +20,7 @@ type Config struct {
 	TGAppHash     string
 	TGSession     string
 	TGPhone       string
+	YTCookiesB64  string
 	WebhookDomain string
 	WebhookPath   string
 	WebhookSecret string
@@ -40,6 +41,7 @@ func LoadConfig() *Config {
 		TGAppHash:     os.Getenv("TG_APP_HASH"),
 		TGSession:     os.Getenv("TG_SESSION"),
 		TGPhone:       os.Getenv("TG_PHONE"),
+		YTCookiesB64:  os.Getenv("YT_COOKIES_B64"),
 		WebhookDomain: os.Getenv("WEBHOOK_DOMAIN"),
 		WebhookPath:   envOr("WEBHOOK_PATH", "/telegram/webhook"),
 		WebhookSecret: os.Getenv("WEBHOOK_SECRET_TOKEN"),

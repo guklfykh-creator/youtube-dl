@@ -1,5 +1,8 @@
 name: YouTube Downloader
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 on:
   workflow_dispatch:
     inputs:
@@ -32,12 +35,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        run: |
+          git init "$GITHUB_WORKSPACE"
+          cd "$GITHUB_WORKSPACE"
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --depth=1 origin "$GITHUB_SHA"
+          git checkout --force FETCH_HEAD
 
       - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
+        run: |
+          curl -fsSL https://go.dev/dl/go1.22.12.linux-amd64.tar.gz -o /tmp/go.tar.gz
+          sudo rm -rf /usr/local/go
+          sudo tar -C /usr/local -xzf /tmp/go.tar.gz
+          echo "/usr/local/go/bin" >> $GITHUB_PATH
+          /usr/local/go/bin/go version
 
       - name: Build binary
         run: go build -o youtube-dl-bot .
@@ -52,11 +63,22 @@ jobs:
           TG_APP_HASH: ${{ secrets.TG_APP_HASH }}
           TG_SESSION: ${{ secrets.TG_SESSION }}
 
-      - name: Install yt-dlp and ffmpeg
+      - name: Install yt-dlp, ffmpeg and deno
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
-          pip install yt-dlp
+          python -m pip install --user --upgrade yt-dlp
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          curl -fsSL https://deno.land/install.sh | sh
+          echo "$HOME/.deno/bin" >> $GITHUB_PATH
+
+      - name: Decode YouTube cookies
+        run: |
+          if [ -n "$YT_COOKIES_B64" ]; then
+            echo "$YT_COOKIES_B64" | base64 -d > /tmp/yt-cookies.txt
+          fi
+        env:
+          YT_COOKIES_B64: ${{ secrets.YT_COOKIES_B64 }}
 
       - name: Download video or audio
         id: download
@@ -67,6 +89,13 @@ jobs:
           CHAT_ID: ${{ github.event.inputs.chat_id }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
         run: |
+          COOKIE_ARGS=()
+          if [ -f /tmp/yt-cookies.txt ]; then
+            COOKIE_ARGS=(--cookies /tmp/yt-cookies.txt)
+          fi
+
+          COMMON_OPTS=(--extractor-retries 3 --retry-sleep extractor=5 --no-progress)
+
           if [ "$FORMAT" = "video" ]; then
             case "$QUALITY" in
               best)  YT_FMT="bv*+ba/b" ;;
@@ -76,21 +105,21 @@ jobs:
               360)   YT_FMT="bv*[height<=360]+ba/b[height<=360]/bv+ba/b" ;;
               *)     YT_FMT="bv*+ba/b" ;;
             esac
-            yt-dlp -f "$YT_FMT" --merge-output-format mp4 \
-              -o "/tmp/output.%(ext)s" "$URL"
+            yt-dlp "${COOKIE_ARGS[@]}" -f "$YT_FMT" --merge-output-format mp4 \
+              "${COMMON_OPTS[@]}" -o "/tmp/output.%(ext)s" "$URL"
           elif [ "$FORMAT" = "audio" ]; then
             case "$QUALITY" in
               mp3)
-                yt-dlp -x --audio-format mp3 --audio-quality 0 \
-                  -o "/tmp/output.%(ext)s" "$URL"
+                yt-dlp "${COOKIE_ARGS[@]}" -x --audio-format mp3 --audio-quality 0 \
+                  "${COMMON_OPTS[@]}" -o "/tmp/output.%(ext)s" "$URL"
                 ;;
               m4a)
-                yt-dlp -f "ba[ext=m4a]/ba/b" \
-                  -o "/tmp/output.%(ext)s" "$URL"
+                yt-dlp "${COOKIE_ARGS[@]}" -f "ba[ext=m4a]/ba/b" \
+                  "${COMMON_OPTS[@]}" -o "/tmp/output.%(ext)s" "$URL"
                 ;;
               *)
-                yt-dlp -x --audio-format mp3 --audio-quality 0 \
-                  -o "/tmp/output.%(ext)s" "$URL"
+                yt-dlp "${COOKIE_ARGS[@]}" -x --audio-format mp3 --audio-quality 0 \
+                  "${COMMON_OPTS[@]}" -o "/tmp/output.%(ext)s" "$URL"
                 ;;
             esac
           else
@@ -114,7 +143,7 @@ jobs:
           FILE_SIZE=$(stat -c%s "$OUTPUT_FILE")
           echo "FILE_SIZE=$FILE_SIZE" >> $GITHUB_ENV
 
-          VIDEO_TITLE=$(yt-dlp --print title "$URL" 2>/dev/null || echo "YouTube Video")
+          VIDEO_TITLE=$(yt-dlp "${COOKIE_ARGS[@]}" --print title "$URL" 2>/dev/null || echo "YouTube Video")
           echo "VIDEO_TITLE<<EOF" >> $GITHUB_ENV
           echo "$VIDEO_TITLE" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
@@ -202,4 +231,5 @@ jobs:
         if: always()
         run: |
           rm -f /tmp/output.*
+          rm -f /tmp/yt-cookies.txt
           rm -f session.json
