@@ -103,17 +103,54 @@ func envOr(key, fallback string) string {
 func resolveMySQLDSN() string {
 	mysqlURL := os.Getenv("MYSQL_URL")
 	if mysqlURL != "" {
-		u, err := url.Parse(mysqlURL)
-		if err == nil && u.Scheme != "" {
-			q := u.Query()
-			q.Set("parseTime", "true")
-			q.Set("charset", "utf8mb4")
-			u.RawQuery = q.Encode()
-			return u.String()
+		dsn, err := mysqlURLToDSN(mysqlURL)
+		if err == nil {
+			return dsn
 		}
 		return mysqlURL
 	}
 	return os.Getenv("MYSQL_DSN")
+}
+
+func mysqlURLToDSN(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", err
+	}
+	if u.Scheme == "" {
+		return "", fmt.Errorf("no scheme")
+	}
+
+	user := ""
+	if u.User != nil {
+		username := u.User.Username()
+		password, hasPass := u.User.Password()
+		if hasPass {
+			user = username + ":" + password
+		} else {
+			user = username
+		}
+	}
+
+	host := u.Hostname()
+	port := u.Port()
+	if port == "" {
+		port = "3306"
+	}
+
+	db := strings.TrimPrefix(u.Path, "/")
+	if db == "" {
+		db = u.Opaque
+	}
+
+	addr := host + ":" + port
+
+	q := u.Query()
+	q.Set("parseTime", "true")
+	q.Set("charset", "utf8mb4")
+
+	dsn := user + "@tcp(" + addr + ")/" + db + "?" + q.Encode()
+	return dsn, nil
 }
 
 func loadDotEnv(path string) error {
