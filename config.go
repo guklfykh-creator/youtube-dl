@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 )
@@ -49,7 +50,7 @@ func LoadConfig() *Config {
 		WebhookPath:   envOr("WEBHOOK_PATH", "/telegram/webhook"),
 		WebhookSecret: os.Getenv("WEBHOOK_SECRET_TOKEN"),
 		Port:          envOr("PORT", "8080"),
-		MySQLDSN:      os.Getenv("MYSQL_DSN"),
+		MySQLDSN:      resolveMySQLDSN(),
 	}
 }
 
@@ -79,7 +80,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("PORT env is required")
 	}
 	if c.MySQLDSN == "" {
-		return fmt.Errorf("MYSQL_DSN env is required")
+		return fmt.Errorf("MYSQL_URL or MYSQL_DSN env is required")
 	}
 	return nil
 }
@@ -97,6 +98,22 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func resolveMySQLDSN() string {
+	mysqlURL := os.Getenv("MYSQL_URL")
+	if mysqlURL != "" {
+		u, err := url.Parse(mysqlURL)
+		if err == nil && u.Scheme != "" {
+			q := u.Query()
+			q.Set("parseTime", "true")
+			q.Set("charset", "utf8mb4")
+			u.RawQuery = q.Encode()
+			return u.String()
+		}
+		return mysqlURL
+	}
+	return os.Getenv("MYSQL_DSN")
 }
 
 func loadDotEnv(path string) error {

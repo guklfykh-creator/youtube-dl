@@ -159,6 +159,7 @@ GH_DEFAULT_BRANCH=main
 TG_APP_ID=
 TG_APP_HASH=
 TG_SESSION=
+MYSQL_URL=
 MYSQL_DSN=
 WEBHOOK_DOMAIN=
 WEBHOOK_PATH=/telegram/webhook
@@ -208,7 +209,10 @@ TG_APP_ID=
 TG_APP_HASH=
 TG_SESSION=
 
-# MySQL connection string. The bot creates the user_languages table automatically.
+# MySQL connection. The bot creates the user_languages table automatically.
+# MYSQL_URL takes priority (recommended for Railway). Format: mysql://user:password@host:3306/database
+# MYSQL_DSN is the fallback. Format: user:password@tcp(host:3306)/database?parseTime=true&charset=utf8mb4
+MYSQL_URL=
 MYSQL_DSN=user:password@tcp(host:3306)/database?parseTime=true&charset=utf8mb4
 
 # Optional. Full path to yt-dlp. If empty, the bot uses PATH or downloads yt-dlp automatically.
@@ -231,7 +235,8 @@ MYSQL_DSN=user:password@tcp(host:3306)/database?parseTime=true&charset=utf8mb4
 | `TG_APP_HASH` | **Yes** | — | Telegram API Hash from my.telegram.org |
 | `TG_SESSION` | **Yes** | — | Base64-encoded MTProto session (generate with `--setup-session`) |
 | `TG_PHONE` | No | — | Phone number for `--setup-session` (optional; asked interactively if not set) |
-| `MYSQL_DSN` | **Yes** | — | MySQL connection string for language storage |
+| `MYSQL_URL` | **Yes** (one of) | — | MySQL URL format (priority; recommended for Railway). Example: `mysql://user:password@host:3306/database` |
+| `MYSQL_DSN` | **Yes** (one of) | — | MySQL DSN format (fallback). Example: `user:password@tcp(host:3306)/database?parseTime=true&charset=utf8mb4` |
 | `YT_DLP_PATH` | No | auto | Optional path to `yt-dlp`; if omitted, the bot checks PATH then downloads the official binary into its cache |
 | `YT_COOKIES_B64` | No | — | Optional base64-encoded YouTube cookies file for metadata extraction and Actions downloads |
 
