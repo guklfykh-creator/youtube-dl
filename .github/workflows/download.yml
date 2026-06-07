@@ -26,6 +26,11 @@ on:
         description: 'Telegram username of target user (for MTProto peer resolution)'
         required: false
         type: string
+      language:
+        description: 'User language: fa or en'
+        required: false
+        default: fa
+        type: string
 
 permissions:
   contents: write
@@ -87,8 +92,17 @@ jobs:
           FORMAT: ${{ github.event.inputs.format_type }}
           QUALITY: ${{ github.event.inputs.quality }}
           CHAT_ID: ${{ github.event.inputs.chat_id }}
+          LANGUAGE: ${{ github.event.inputs.language }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
         run: |
+          if [ "$LANGUAGE" = "en" ]; then
+            INVALID_FORMAT_TEXT="❌ Invalid format"
+            FILE_NOT_FOUND_TEXT="❌ Download failed - file was not found."
+          else
+            INVALID_FORMAT_TEXT="❌ فرمت نامعتبر"
+            FILE_NOT_FOUND_TEXT="❌ خطا در دانلود - فایل یافت نشد."
+          fi
+
           COOKIE_ARGS=()
           if [ -f /tmp/yt-cookies.txt ]; then
             COOKIE_ARGS=(--cookies /tmp/yt-cookies.txt)
@@ -124,7 +138,8 @@ jobs:
             esac
           else
             MSG=$(jq -n --arg chat "$CHAT_ID" \
-              '{chat_id: $chat, text: "❌ فرمت نامعتبر"}')
+              --arg text "$INVALID_FORMAT_TEXT" \
+              '{chat_id: $chat, text: $text}')
             curl -f -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
               -H "Content-Type: application/json" -d "$MSG"
             exit 1
@@ -133,7 +148,8 @@ jobs:
           OUTPUT_FILE=$(ls /tmp/output.* 2>/dev/null | head -1)
           if [ -z "$OUTPUT_FILE" ]; then
             MSG=$(jq -n --arg chat "$CHAT_ID" \
-              '{chat_id: $chat, text: "❌ خطا در دانلود - فایل یافت نشد."}')
+              --arg text "$FILE_NOT_FOUND_TEXT" \
+              '{chat_id: $chat, text: $text}')
             curl -f -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
               -H "Content-Type: application/json" -d "$MSG"
             exit 1
@@ -156,18 +172,33 @@ jobs:
           TG_SESSION: ${{ secrets.TG_SESSION }}
           CHAT_ID: ${{ github.event.inputs.chat_id }}
           USERNAME: ${{ github.event.inputs.username }}
+          LANGUAGE: ${{ github.event.inputs.language }}
           FORMAT: ${{ github.event.inputs.format_type }}
           OUTPUT_FILE: ${{ env.OUTPUT_FILE }}
           VIDEO_TITLE: ${{ env.VIDEO_TITLE }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
         run: |
+          if [ "$LANGUAGE" = "en" ]; then
+            TOO_LARGE_TEXT='❌ File is larger than '
+            TOO_LARGE_SUFFIX='GB. Please choose a lower quality.'
+            UPLOAD_FAILED_PREFIX='❌ Sending the file failed ('
+            UPLOAD_FAILED_SUFFIX=' MB). Please try again.'
+          else
+            TOO_LARGE_TEXT='❌ فایل بیش از '
+            TOO_LARGE_SUFFIX='GB است. لطفا کیفیت پایینتر انتخاب کنید.'
+            UPLOAD_FAILED_PREFIX='❌ ارسال فایل ناموفق بود ('
+            UPLOAD_FAILED_SUFFIX=' MB). لطفا دوباره تلاش کنید.'
+          fi
+
           FILE_SIZE_GB=$((FILE_SIZE / 1073741824))
 
           if [ "$FILE_SIZE_GB" -ge 2 ]; then
             MSG=$(jq -n \
               --arg chat "$CHAT_ID" \
               --arg size "$FILE_SIZE_GB" \
-              '{chat_id: $chat, text: ("❌ فایل بیش از " + $size + "GB است. لطفا کیفیت پایینتر انتخاب کنید.")}')
+              --arg prefix "$TOO_LARGE_TEXT" \
+              --arg suffix "$TOO_LARGE_SUFFIX" \
+              '{chat_id: $chat, text: ($prefix + $size + $suffix)}')
             curl -f -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
               -H "Content-Type: application/json" -d "$MSG"
             exit 1
@@ -208,8 +239,9 @@ jobs:
               MSG=$(jq -n \
                 --arg chat "$CHAT_ID" \
                 --arg size "$FILE_SIZE_MB" \
-                --arg title "$VIDEO_TITLE" \
-                '{chat_id: $chat, text: ("❌ ارسال فایل ناموفق بود (" + $size + " MB). لطفا دوباره تلاش کنید.")}')
+                --arg prefix "$UPLOAD_FAILED_PREFIX" \
+                --arg suffix "$UPLOAD_FAILED_SUFFIX" \
+                '{chat_id: $chat, text: ($prefix + $size + $suffix)}')
               curl -f -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
                 -H "Content-Type: application/json" -d "$MSG"
               exit 1
@@ -220,10 +252,17 @@ jobs:
         if: failure()
         env:
           CHAT_ID: ${{ github.event.inputs.chat_id }}
+          LANGUAGE: ${{ github.event.inputs.language }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
         run: |
+          if [ "$LANGUAGE" = "en" ]; then
+            ERROR_TEXT="❌ Download failed. Please try again or choose a lower quality."
+          else
+            ERROR_TEXT="❌ خطا در دانلود. لطفا دوباره تلاش کنید یا کیفیت پایینتر انتخاب کنید."
+          fi
           MSG=$(jq -n --arg chat "$CHAT_ID" \
-            '{chat_id: $chat, text: "❌ خطا در دانلود. لطفا دوباره تلاش کنید یا کیفیت پایینتر انتخاب کنید."}')
+            --arg text "$ERROR_TEXT" \
+            '{chat_id: $chat, text: $text}')
           curl -f -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
             -H "Content-Type: application/json" -d "$MSG"
 

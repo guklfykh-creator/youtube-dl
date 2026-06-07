@@ -1,0 +1,21 @@
+{
+  "start": "Hi! YouTube download bot\n\nSend a YouTube video link and I will download it for you.\n\nSteps:\n1. Send the video link\n2. Choose quality or format\n3. Receive the file\n\nUse /help for help",
+  "help": "Bot help:\n\n1. Send a YouTube video link\n2. Choose a quality from the menu\n3. GitHub Actions downloads the file and sends it to you\n\n/cancel - cancel",
+  "cancel": "Session cleared. Send the YouTube link again.",
+  "choose_language": "Please choose your language:",
+  "language_saved": "Your language has been saved. I will process your previous request now.",
+  "invalid_language": "Selected language is not valid.",
+  "invalid_youtube_url": "Please send a valid YouTube link.",
+  "metadata_loading": "Fetching video information...",
+  "metadata_failed": "Could not fetch video information. Please try again.",
+  "quality_prompt": "Choose format and quality:",
+  "video_info": "Title: %s\nDuration: %s\n\nDescription:\n%s",
+  "no_description": "No description",
+  "expired_session": "Session expired. Send the YouTube link again.",
+  "invalid_selection": "Invalid selection. Please try again.",
+  "workflow_failed": "Could not start the download. Please try again.",
+  "download_started": "Downloading... Please wait. The file will be sent soon.",
+  "best_quality": "Best",
+  "video_button": "Video %s - %s",
+  "audio_button": "Audio %s - %s"
+}

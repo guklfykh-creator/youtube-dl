@@ -7,43 +7,75 @@ import (
 	"strings"
 )
 
-var qualityButtons = []InlineKeyboardButton{
-	{Text: "ویدیو - بهترین کیفیت", CallbackData: "v_best"},
-	{Text: "ویدیو - 1080p", CallbackData: "v_1080"},
-	{Text: "ویدیو - 720p", CallbackData: "v_720"},
-	{Text: "ویدیو - 480p", CallbackData: "v_480"},
-	{Text: "ویدیو - 360p", CallbackData: "v_360"},
-	{Text: "صدا - MP3", CallbackData: "a_mp3"},
-	{Text: "صدا - M4A", CallbackData: "a_m4a"},
-}
-
 func onStart(ctx context.Context, bot *BotAPI, msg *Message) error {
-	return bot.SendMessage(ctx, msg.Chat.ID,
-		"👋 سلام! ربات دانلود یوتیوب\n\n"+
-			"لینک ویدیو یوتیوب را بفرستید تا برایتان دانلود کنم.\n\n"+
-			"📌 مراحل:\n"+
-			"1. لینک ویدیو را بفرستید\n"+
-			"2. کیفیت یا فرمت را انتخاب کنید\n"+
-			"3. فایل برایتان ارسال میشود\n\n"+
-			"💡 /help برای راهنما", nil)
+	lang := bot.userLanguage(ctx, msg)
+	return bot.SendMessage(ctx, msg.Chat.ID, bot.localizer.T(lang, "start"), nil)
 }
 
 func onHelp(ctx context.Context, bot *BotAPI, msg *Message) error {
-	return bot.SendMessage(ctx, msg.Chat.ID,
-		"📖 راهنمای ربات:\n\n"+
-			"1️⃣ لینک ویدیو یوتیوب را بفرستید\n"+
-			"2️⃣ کیفیت مورد نظر را از منو انتخاب کنید:\n"+
-			"   • ویدیو: بهترین، 1080p، 720p، 480p، 360p\n"+
-			"   • صدا: MP3 یا M4A\n"+
-			"3️⃣ فایل توسط سرور دانلود و برایتان ارسال میشود\n\n"+
-			"⚠️ فایلهای کمتر از 50MB مستقیم ارسال میشوند\n"+
-			"⚠️ فایلهای بیشتر از 50MB با MTProto ارسال میشوند\n\n"+
-			"/cancel - انصراف", nil)
+	lang := bot.userLanguage(ctx, msg)
+	return bot.SendMessage(ctx, msg.Chat.ID, bot.localizer.T(lang, "help"), nil)
 }
 
 func onCancel(ctx context.Context, bot *BotAPI, msg *Message) error {
+	lang := bot.userLanguage(ctx, msg)
 	DelSession(msg.Chat.ID)
-	return bot.SendMessage(ctx, msg.Chat.ID, "❌ نشست پاک شد. لینک یوتیوب را دوباره بفرستید.", nil)
+	return bot.SendMessage(ctx, msg.Chat.ID, bot.localizer.T(lang, "cancel"), nil)
+}
+
+func onLanguageSelect(ctx context.Context, bot *BotAPI, callback *CallbackQuery) error {
+	_ = bot.AnswerCallback(ctx, callback.ID)
+	rawLang := strings.TrimPrefix(callback.Data, "lang:")
+	if !IsSupportedLanguage(rawLang) {
+		if callback.Message == nil {
+			return nil
+		}
+		return bot.SendMessage(ctx, callback.Message.Chat.ID, bot.localizer.T(defaultLanguage, "invalid_language"), nil)
+	}
+	lang := NormalizeLanguage(rawLang)
+
+	userID := callback.From.ID
+	if err := bot.store.SetUserLanguage(ctx, userID, lang); err != nil {
+		return err
+	}
+
+	chatID := callback.From.ID
+	if callback.Message != nil {
+		chatID = callback.Message.Chat.ID
+	}
+	if err := bot.SendMessage(ctx, chatID, bot.localizer.T(lang, "language_saved"), nil); err != nil {
+		return err
+	}
+
+	pending := GetPendingRequest(userID)
+	if pending == nil {
+		return nil
+	}
+	DelPendingRequest(userID)
+	return bot.handleMessage(ctx, &Message{
+		Text: pending.Text,
+		Chat: Chat{
+			ID:   pending.ChatID,
+			Type: pending.ChatType,
+		},
+		From: &User{ID: pending.UserID},
+	})
+}
+
+func (bot *BotAPI) userLanguage(ctx context.Context, msg *Message) string {
+	userID := msg.Chat.ID
+	if msg.From != nil {
+		userID = msg.From.ID
+	}
+	lang, ok, err := bot.store.GetUserLanguage(ctx, userID)
+	if err != nil {
+		log.Printf("get user language failed: %v", err)
+		return defaultLanguage
+	}
+	if !ok {
+		return defaultLanguage
+	}
+	return NormalizeLanguage(lang)
 }
 
 func isYouTubeURL(text string) bool {
@@ -67,27 +99,88 @@ func isYouTubeURL(text string) bool {
 }
 
 func onText(ctx context.Context, bot *BotAPI, msg *Message) error {
+	lang := bot.userLanguage(ctx, msg)
 	text := strings.TrimSpace(msg.Text)
 
 	if !isYouTubeURL(text) {
 		if msg.Chat.Type == "private" {
-			return bot.SendMessage(ctx, msg.Chat.ID, "❌ لطفا لینک یوتیوب معتبر بفرستید.", nil)
+			return bot.SendMessage(ctx, msg.Chat.ID, bot.localizer.T(lang, "invalid_youtube_url"), nil)
 		}
 		return nil
 	}
 
-	SetSession(msg.Chat.ID, text)
-
-	markup := &InlineKeyboardMarkup{
-		InlineKeyboard: [][]InlineKeyboardButton{
-			{qualityButtons[0], qualityButtons[1]},
-			{qualityButtons[2], qualityButtons[3]},
-			{qualityButtons[4]},
-			{qualityButtons[5], qualityButtons[6]},
-		},
+	if err := bot.SendMessage(ctx, msg.Chat.ID, bot.localizer.T(lang, "metadata_loading"), nil); err != nil {
+		return err
 	}
 
-	return bot.SendMessage(ctx, msg.Chat.ID, "🎵 فرمت و کیفیت مورد نظر را انتخاب کنید:", markup)
+	info, err := FetchVideoInfo(ctx, bot.cfg, text)
+	if err != nil {
+		log.Printf("fetch video info failed: %v", err)
+		return bot.SendMessage(ctx, msg.Chat.ID, bot.localizer.T(lang, "metadata_failed"), nil)
+	}
+
+	SetSession(msg.Chat.ID, text)
+	markup := qualityKeyboard(bot.localizer, lang, info.Formats)
+	caption := videoCaption(bot.localizer, lang, info)
+
+	if info.Thumbnail != "" {
+		if err := bot.SendPhoto(ctx, msg.Chat.ID, info.Thumbnail, caption, markup); err == nil {
+			return nil
+		}
+		log.Printf("send photo metadata failed, falling back to message")
+	}
+
+	return bot.SendMessage(ctx, msg.Chat.ID, caption+"\n\n"+bot.localizer.T(lang, "quality_prompt"), markup)
+}
+
+func qualityKeyboard(l *Localizer, lang string, options []DownloadOption) *InlineKeyboardMarkup {
+	rows := make([][]InlineKeyboardButton, 0, 4)
+	row := make([]InlineKeyboardButton, 0, 2)
+	for _, option := range options {
+		textKey := "video_button"
+		qualityLabel := option.Label
+		if option.Quality == "best" {
+			qualityLabel = l.T(lang, "best_quality")
+		}
+		if option.FormatType == "audio" {
+			textKey = "audio_button"
+		}
+		row = append(row, InlineKeyboardButton{
+			Text:         l.T(lang, textKey, qualityLabel, formatBytes(option.SizeBytes)),
+			CallbackData: callbackData(option.FormatType, option.Quality),
+		})
+		if len(row) == 2 {
+			rows = append(rows, row)
+			row = make([]InlineKeyboardButton, 0, 2)
+		}
+	}
+	if len(row) > 0 {
+		rows = append(rows, row)
+	}
+	if len(rows) == 0 {
+		rows = [][]InlineKeyboardButton{
+			{
+				{Text: l.T(lang, "video_button", l.T(lang, "best_quality"), "-"), CallbackData: "v_best"},
+				{Text: l.T(lang, "audio_button", "MP3", "-"), CallbackData: "a_mp3"},
+			},
+		}
+	}
+	return &InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
+func videoCaption(l *Localizer, lang string, info *VideoInfo) string {
+	description := info.Description
+	if description == "" {
+		description = l.T(lang, "no_description")
+	}
+	return l.T(lang, "video_info", info.Title, formatDuration(info.Duration), description)
+}
+
+func callbackData(formatType, quality string) string {
+	if formatType == "audio" {
+		return "a_" + quality
+	}
+	return "v_" + quality
 }
 
 func parseCallbackData(data string) (formatType, quality string) {
@@ -107,24 +200,28 @@ func onQualitySelect(ctx context.Context, bot *BotAPI, callback *CallbackQuery) 
 	}
 
 	chatID := callback.Message.Chat.ID
+	lang := defaultLanguage
+	if storedLang, ok, err := bot.store.GetUserLanguage(ctx, callback.From.ID); err == nil && ok {
+		lang = storedLang
+	}
+
 	session := GetSession(chatID)
 	if session == nil {
-		return bot.SendMessage(ctx, chatID, "❌ نشست منقضی شده. لینک یوتیوب را دوباره بفرستید.", nil)
+		return bot.SendMessage(ctx, chatID, bot.localizer.T(lang, "expired_session"), nil)
 	}
 
 	formatType, quality := parseCallbackData(callback.Data)
 	if formatType == "" {
-		return bot.SendMessage(ctx, chatID, "❌ انتخاب نامعتبر. دوباره تلاش کنید.", nil)
+		return bot.SendMessage(ctx, chatID, bot.localizer.T(lang, "invalid_selection"), nil)
 	}
 
 	chatIDStr := fmt.Sprintf("%d", chatID)
 	username := callback.From.Username
 
-	cfg := LoadConfig()
-	if err := TriggerWorkflow(cfg, session.URL, formatType, quality, chatIDStr, username); err != nil {
+	if err := TriggerWorkflow(bot.cfg, session.URL, formatType, quality, chatIDStr, username, lang); err != nil {
 		log.Printf("workflow trigger failed: %v (format=%s quality=%s chatID=%s)",
 			err, formatType, quality, chatIDStr)
-		return bot.SendMessage(ctx, chatID, "❌ خطا در شروع دانلود. لطفا دوباره تلاش کنید.", nil)
+		return bot.SendMessage(ctx, chatID, bot.localizer.T(lang, "workflow_failed"), nil)
 	}
 
 	DelSession(chatID)
@@ -132,5 +229,5 @@ func onQualitySelect(ctx context.Context, bot *BotAPI, callback *CallbackQuery) 
 	log.Printf("workflow triggered: format=%s quality=%s chatID=%s username=%s",
 		formatType, quality, chatIDStr, username)
 
-	return bot.SendMessage(ctx, chatID, "⏳ در حال دانلود... لطفا صبر کنید. فایل به زودی برایتان ارسال خواهد شد.", nil)
+	return bot.SendMessage(ctx, chatID, bot.localizer.T(lang, "download_started"), nil)
 }

@@ -31,7 +31,9 @@
 - **Healthcheck** — `/healthz` endpoint for Railway and monitoring
 - **Secure** — webhook secret token verification; secrets stay in server-side `.env`
 - **Session timeout** — 5 min auto-expiry for pending quality selections
-- **Persian UI** — all bot messages in Farsi
+- **Multilingual UI** — Persian and English via separate locale JSON files
+- **MySQL language storage** — stores each Telegram user's selected language by numeric user ID
+- **Video preview** — sends thumbnail, title, duration, description, quality choices, and estimated size before download
 - **Interactive session setup** — `--setup-session` command to authenticate and generate `TG_SESSION`
 
 ---
@@ -63,12 +65,13 @@
 
 1. **User** sends a YouTube URL to the Telegram bot
 2. **Telegram** pushes the update to the bot server via HTTPS webhook
-3. **Bot** shows an inline keyboard with quality/format choices
-4. **User** picks a quality (e.g. 720p video or MP3 audio)
-5. **Telegram** pushes the callback via webhook; **Bot** triggers a `workflow_dispatch` on GitHub Actions
-6. **GitHub Actions** runs `yt-dlp` + `ffmpeg` to download and encode the media
-7. **Uploader mode** in the same binary sends the file to the user via MTProto (gotd/td), or falls back to Bot API for ≤ 50 MB
-8. **User** receives the file directly in Telegram
+3. **Bot** asks for a language on the user's first message and stores it in MySQL
+4. **Bot** reads metadata with `yt-dlp`, then sends thumbnail, description, duration, quality choices, and estimated sizes
+5. **User** picks a quality (e.g. 720p video or MP3 audio)
+6. **Telegram** pushes the callback via webhook; **Bot** triggers a `workflow_dispatch` on GitHub Actions
+7. **GitHub Actions** runs `yt-dlp` + `ffmpeg` to download and encode the media
+8. **Uploader mode** in the same binary sends the file to the user via MTProto (gotd/td), or falls back to Bot API for ≤ 50 MB
+9. **User** receives the file directly in Telegram
 
 ---
 
@@ -156,6 +159,7 @@ GH_DEFAULT_BRANCH=main
 TG_APP_ID=
 TG_APP_HASH=
 TG_SESSION=
+MYSQL_DSN=
 WEBHOOK_DOMAIN=
 WEBHOOK_PATH=/telegram/webhook
 WEBHOOK_SECRET_TOKEN=
@@ -203,6 +207,12 @@ WEBHOOK_SECRET_TOKEN=
 TG_APP_ID=
 TG_APP_HASH=
 TG_SESSION=
+
+# MySQL connection string. The bot creates the user_languages table automatically.
+MYSQL_DSN=user:password@tcp(host:3306)/database?parseTime=true&charset=utf8mb4
+
+# Optional. Full path to yt-dlp. If empty, the bot uses PATH or downloads yt-dlp automatically.
+# YT_DLP_PATH=
 ```
 
 | Variable | Required | Default | Description |
@@ -221,6 +231,9 @@ TG_SESSION=
 | `TG_APP_HASH` | **Yes** | — | Telegram API Hash from my.telegram.org |
 | `TG_SESSION` | **Yes** | — | Base64-encoded MTProto session (generate with `--setup-session`) |
 | `TG_PHONE` | No | — | Phone number for `--setup-session` (optional; asked interactively if not set) |
+| `MYSQL_DSN` | **Yes** | — | MySQL connection string for language storage |
+| `YT_DLP_PATH` | No | auto | Optional path to `yt-dlp`; if omitted, the bot checks PATH then downloads the official binary into its cache |
+| `YT_COOKIES_B64` | No | — | Optional base64-encoded YouTube cookies file for metadata extraction and Actions downloads |
 
 ---
 
@@ -272,7 +285,10 @@ Copy the base64 string and set it as `TG_SESSION` in `.env`.
 | `main.go` | Bot API types, webhook server, `setWebhook` on startup, CLI flags (`--setup-session`, `--file`, `--chat-id`), healthcheck `/healthz` |
 | `handlers.go` | `/start`, `/help`, `/cancel`, URL detection, quality selection |
 | `config.go` | Environment loading, `.env` parser, validation (all env vars: BOT_TOKEN, GH_*, TG_*, WEBHOOK_*, PORT) |
-| `state.go` | In-memory session store with 5-min TTL |
+| `database.go` | MySQL connection, migration, and user language persistence |
+| `i18n.go` | Locale loading and translation helpers |
+| `youtube.go` | `yt-dlp` metadata extraction, thumbnail info, quality sizes |
+| `state.go` | In-memory pending URL and quality-selection stores with 5-min TTL |
 | `ghactions.go` | GitHub Actions `workflow_dispatch` API call |
 
 ### Webhook Flow
@@ -316,7 +332,7 @@ Copy the base64 string and set it as `TG_SESSION` in `.env`.
 - `TG_SESSION` is written to disk only during upload
 - Webhook requests are verified via `X-Telegram-Bot-Api-Secret-Token` header; unmatched requests get `401`
 - `WEBHOOK_SECRET_TOKEN` is auto-derived from `BOT_TOKEN` SHA-256 if not explicitly set
-- Workflow inputs contain only `url`, `format_type`, `quality`, `chat_id`, `username` — no secrets
+- Workflow inputs contain only `url`, `format_type`, `quality`, `chat_id`, `username`, `language` — no secrets
 - Session files cleaned up in `always()` step
 - `--setup-session` asks before writing to `.env` and uses file permission `0600`
 

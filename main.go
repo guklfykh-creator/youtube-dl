@@ -16,8 +16,11 @@ import (
 )
 
 type BotAPI struct {
-	token  string
-	client *http.Client
+	token     string
+	client    *http.Client
+	cfg       *Config
+	store     *Store
+	localizer *Localizer
 }
 
 type Update struct {
@@ -98,9 +101,26 @@ func runBot() error {
 		return fmt.Errorf("config error: %w", err)
 	}
 
+	startupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	store, err := NewStore(startupCtx, cfg.MySQLDSN)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	localizer, err := LoadLocalizer("locales")
+	if err != nil {
+		return err
+	}
+
 	bot := &BotAPI{
-		token:  cfg.BotToken,
-		client: &http.Client{Timeout: 35 * time.Second},
+		token:     cfg.BotToken,
+		client:    &http.Client{Timeout: 35 * time.Second},
+		cfg:       cfg,
+		store:     store,
+		localizer: localizer,
 	}
 
 	webhookURL, err := cfg.WebhookURL()
@@ -214,22 +234,42 @@ func (b *BotAPI) WebhookHandler(secretToken string) http.HandlerFunc {
 
 func (b *BotAPI) HandleUpdate(ctx context.Context, update Update) error {
 	if update.CallbackQuery != nil {
+		if strings.HasPrefix(update.CallbackQuery.Data, "lang:") {
+			return onLanguageSelect(ctx, b, update.CallbackQuery)
+		}
 		return onQualitySelect(ctx, b, update.CallbackQuery)
 	}
 	if update.Message == nil {
 		return nil
 	}
 
-	text := update.Message.Text
+	userID := update.Message.Chat.ID
+	if update.Message.From != nil {
+		userID = update.Message.From.ID
+	}
+	_, ok, err := b.store.GetUserLanguage(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		SetPendingRequest(userID, update.Message)
+		return b.SendMessage(ctx, update.Message.Chat.ID, b.localizer.T(defaultLanguage, "choose_language"), b.localizer.LanguageKeyboard())
+	}
+
+	return b.handleMessage(ctx, update.Message)
+}
+
+func (b *BotAPI) handleMessage(ctx context.Context, msg *Message) error {
+	text := msg.Text
 	switch text {
 	case "/start":
-		return onStart(ctx, b, update.Message)
+		return onStart(ctx, b, msg)
 	case "/help":
-		return onHelp(ctx, b, update.Message)
+		return onHelp(ctx, b, msg)
 	case "/cancel":
-		return onCancel(ctx, b, update.Message)
+		return onCancel(ctx, b, msg)
 	default:
-		return onText(ctx, b, update.Message)
+		return onText(ctx, b, msg)
 	}
 }
 
@@ -242,6 +282,18 @@ func (b *BotAPI) SendMessage(ctx context.Context, chatID int64, text string, mar
 		payload["reply_markup"] = markup
 	}
 	return b.Call(ctx, "sendMessage", payload, nil)
+}
+
+func (b *BotAPI) SendPhoto(ctx context.Context, chatID int64, photo, caption string, markup *InlineKeyboardMarkup) error {
+	payload := map[string]any{
+		"chat_id": chatID,
+		"photo":   photo,
+		"caption": caption,
+	}
+	if markup != nil {
+		payload["reply_markup"] = markup
+	}
+	return b.Call(ctx, "sendPhoto", payload, nil)
 }
 
 func (b *BotAPI) AnswerCallback(ctx context.Context, callbackID string) error {

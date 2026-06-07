@@ -21,10 +21,12 @@ type Config struct {
 	TGSession     string
 	TGPhone       string
 	YTCookiesB64  string
+	YTDLPPath     string
 	WebhookDomain string
 	WebhookPath   string
 	WebhookSecret string
 	Port          string
+	MySQLDSN      string
 }
 
 func LoadConfig() *Config {
@@ -42,10 +44,12 @@ func LoadConfig() *Config {
 		TGSession:     os.Getenv("TG_SESSION"),
 		TGPhone:       os.Getenv("TG_PHONE"),
 		YTCookiesB64:  os.Getenv("YT_COOKIES_B64"),
+		YTDLPPath:     os.Getenv("YT_DLP_PATH"),
 		WebhookDomain: os.Getenv("WEBHOOK_DOMAIN"),
 		WebhookPath:   envOr("WEBHOOK_PATH", "/telegram/webhook"),
 		WebhookSecret: os.Getenv("WEBHOOK_SECRET_TOKEN"),
 		Port:          envOr("PORT", "8080"),
+		MySQLDSN:      os.Getenv("MYSQL_DSN"),
 	}
 }
 
@@ -73,6 +77,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Port == "" {
 		return fmt.Errorf("PORT env is required")
+	}
+	if c.MySQLDSN == "" {
+		return fmt.Errorf("MYSQL_DSN env is required")
 	}
 	return nil
 }

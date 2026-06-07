@@ -20,7 +20,7 @@ type WorkflowPayload struct {
 	Inputs map[string]string `json:"inputs"`
 }
 
-func TriggerWorkflow(cfg *Config, url, formatType, quality, chatID, username string) error {
+func TriggerWorkflow(cfg *Config, url, formatType, quality, chatID, username, language string) error {
 	client := &http.Client{Timeout: 30 * time.Second}
 
 	if err := SyncWorkflowSecrets(cfg, client); err != nil {
@@ -32,6 +32,7 @@ func TriggerWorkflow(cfg *Config, url, formatType, quality, chatID, username str
 		"format_type": formatType,
 		"quality":     quality,
 		"chat_id":     chatID,
+		"language":    NormalizeLanguage(language),
 	}
 	if username != "" {
 		inputs["username"] = username
