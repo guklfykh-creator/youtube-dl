@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net/http"
 	"os"
@@ -68,6 +69,56 @@ func FetchVideoInfo(ctx context.Context, cfg *Config, url string) (*VideoInfo, e
 		return nil, err
 	}
 
+	nocookieArgs := buildInfoArgs("--extractor-args", "youtube:player_client=android_creator,ios", url)
+
+	stdout, err := runYTDLP(ctx, ytdlpPath, nocookieArgs)
+	if err == nil {
+		return parseVideoInfo(stdout)
+	}
+
+	firstErr := err
+	log.Printf("yt-dlp no-cookies attempt failed: %v", firstErr)
+
+	cookiePath, cookieCleanup, cookieErr := writeTempCookies(cfg)
+	if cookieErr != nil {
+		return nil, fmt.Errorf("no-cookies attempt failed: %v; cookies setup failed: %w", firstErr, cookieErr)
+	}
+	defer cookieCleanup()
+
+	if cookiePath != "" {
+		cookieArgs := buildInfoArgs("--cookies", cookiePath, url)
+		stdout, err = runYTDLP(ctx, ytdlpPath, cookieArgs)
+		if err == nil {
+			return parseVideoInfo(stdout)
+		}
+		log.Printf("yt-dlp cookies attempt failed: %v", err)
+	}
+
+	refreshedPath, refreshed, refreshErr := RefreshYTDLP(ctx, cfg)
+	if refreshErr != nil {
+		return nil, fmt.Errorf("all attempts failed: %v (yt-dlp refresh error: %w)", firstErr, refreshErr)
+	}
+	if !refreshed {
+		return nil, firstErr
+	}
+
+	stdout, err = runYTDLP(ctx, refreshedPath, nocookieArgs)
+	if err == nil {
+		return parseVideoInfo(stdout)
+	}
+
+	if cookiePath != "" {
+		cookieArgs := buildInfoArgs("--cookies", cookiePath, url)
+		stdout, err = runYTDLP(ctx, refreshedPath, cookieArgs)
+		if err == nil {
+			return parseVideoInfo(stdout)
+		}
+	}
+
+	return nil, fmt.Errorf("all attempts failed: %v", firstErr)
+}
+
+func buildInfoArgs(extras ...string) []string {
 	args := []string{
 		"--dump-json",
 		"--no-playlist",
@@ -76,42 +127,17 @@ func FetchVideoInfo(ctx context.Context, cfg *Config, url string) (*VideoInfo, e
 		"--retry-sleep", "extractor:3",
 		"--socket-timeout", "20",
 	}
-	cookiePath, cleanup, err := writeTempCookies(cfg)
-	if err != nil {
-		return nil, err
-	}
-	defer cleanup()
-	if cookiePath != "" {
-		args = append(args, "--cookies", cookiePath)
-	}
-	args = append(args, url)
+	return append(args, extras...)
+}
 
-	stdout, err := runYTDLP(ctx, ytdlpPath, args)
-	if err != nil {
-		refreshedPath, refreshed, refreshErr := RefreshYTDLP(ctx, cfg)
-		if refreshed && refreshErr == nil {
-			if retryStdout, retryErr := runYTDLP(ctx, refreshedPath, args); retryErr == nil {
-				stdout = retryStdout
-				err = nil
-			} else {
-				err = fmt.Errorf("%w; retry after yt-dlp refresh failed: %v", err, retryErr)
-			}
-		} else if refreshErr != nil {
-			err = fmt.Errorf("%w; yt-dlp refresh failed: %v", err, refreshErr)
-		}
-	}
-	if err != nil {
-		return nil, err
-	}
-
+func parseVideoInfo(data []byte) (*VideoInfo, error) {
 	var raw ytdlpInfo
-	if err := json.Unmarshal(stdout, &raw); err != nil {
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("decode yt-dlp metadata: %w", err)
 	}
 	if raw.Title == "" {
 		return nil, errors.New("yt-dlp metadata missing title")
 	}
-
 	info := &VideoInfo{
 		ID:          raw.ID,
 		Title:       raw.Title,

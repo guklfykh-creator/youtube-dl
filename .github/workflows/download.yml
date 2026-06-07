@@ -103,13 +103,7 @@ jobs:
             FILE_NOT_FOUND_TEXT="❌ خطا در دانلود - فایل یافت نشد."
           fi
 
-          COOKIE_ARGS=()
-          if [ -f /tmp/yt-cookies.txt ]; then
-            COOKIE_ARGS=(--cookies /tmp/yt-cookies.txt)
-          fi
-
-          COMMON_OPTS=(--extractor-retries 3 --retry-sleep extractor:5 --no-progress)
-
+          YT_FMT=""
           if [ "$FORMAT" = "video" ]; then
             case "$QUALITY" in
               best)  YT_FMT="bv*+ba/b" ;;
@@ -119,26 +113,64 @@ jobs:
               360)   YT_FMT="bv*[height<=360]+ba/b[height<=360]/bv+ba/b" ;;
               *)     YT_FMT="bv*+ba/b" ;;
             esac
-            yt-dlp "${COOKIE_ARGS[@]}" -f "$YT_FMT" --merge-output-format mp4 \
-              "${COMMON_OPTS[@]}" -o "/tmp/output.%(ext)s" "$URL"
-          elif [ "$FORMAT" = "audio" ]; then
-            case "$QUALITY" in
-              mp3)
-                yt-dlp "${COOKIE_ARGS[@]}" -x --audio-format mp3 --audio-quality 0 \
-                  "${COMMON_OPTS[@]}" -o "/tmp/output.%(ext)s" "$URL"
-                ;;
-              m4a)
-                yt-dlp "${COOKIE_ARGS[@]}" -f "ba[ext=m4a]/ba/b" \
-                  "${COMMON_OPTS[@]}" -o "/tmp/output.%(ext)s" "$URL"
-                ;;
-              *)
-                yt-dlp "${COOKIE_ARGS[@]}" -x --audio-format mp3 --audio-quality 0 \
-                  "${COMMON_OPTS[@]}" -o "/tmp/output.%(ext)s" "$URL"
-                ;;
-            esac
-          else
+          elif [ "$FORMAT" != "audio" ]; then
             MSG=$(jq -n --arg chat "$CHAT_ID" \
               --arg text "$INVALID_FORMAT_TEXT" \
+              '{chat_id: $chat, text: $text}')
+            curl -f -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
+              -H "Content-Type: application/json" -d "$MSG"
+            exit 1
+          fi
+
+          run_download() {
+            local extra_args=("$@")
+            if [ "$FORMAT" = "video" ]; then
+              yt-dlp "${extra_args[@]}" -f "$YT_FMT" --merge-output-format mp4 \
+                "${COMMON_OPTS[@]}" -o "/tmp/output.%(ext)s" "$URL"
+            elif [ "$FORMAT" = "audio" ]; then
+              case "$QUALITY" in
+                mp3)
+                  yt-dlp "${extra_args[@]}" -x --audio-format mp3 --audio-quality 0 \
+                    "${COMMON_OPTS[@]}" -o "/tmp/output.%(ext)s" "$URL"
+                  ;;
+                m4a)
+                  yt-dlp "${extra_args[@]}" -f "ba[ext=m4a]/ba/b" \
+                    "${COMMON_OPTS[@]}" -o "/tmp/output.%(ext)s" "$URL"
+                  ;;
+                *)
+                  yt-dlp "${extra_args[@]}" -x --audio-format mp3 --audio-quality 0 \
+                    "${COMMON_OPTS[@]}" -o "/tmp/output.%(ext)s" "$URL"
+                  ;;
+              esac
+            fi
+          }
+
+          COMMON_OPTS=(--extractor-retries 3 --retry-sleep extractor:5 --no-progress)
+          PLAYER_CLIENT_ARGS=(--extractor-args "youtube:player_client=android_creator,ios")
+
+          echo "Attempt 1: downloading without cookies (alternative player clients)..."
+          set +e
+          run_download "${PLAYER_CLIENT_ARGS[@]}"
+          DL_STATUS=$?
+          set -e
+
+          if [ "$DL_STATUS" -ne 0 ]; then
+            rm -f /tmp/output.*
+            if [ -f /tmp/yt-cookies.txt ]; then
+              echo "Attempt 1 failed. Attempt 2: retrying with cookies..."
+              COOKIE_ARGS=(--cookies /tmp/yt-cookies.txt)
+              set +e
+              run_download "${COOKIE_ARGS[@]}"
+              DL_STATUS=$?
+              set -e
+            else
+              echo "Attempt 1 failed and no cookies available for fallback."
+            fi
+          fi
+
+          if [ "$DL_STATUS" -ne 0 ]; then
+            MSG=$(jq -n --arg chat "$CHAT_ID" \
+              --arg text "$FILE_NOT_FOUND_TEXT" \
               '{chat_id: $chat, text: $text}')
             curl -f -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
               -H "Content-Type: application/json" -d "$MSG"
@@ -159,7 +191,17 @@ jobs:
           FILE_SIZE=$(stat -c%s "$OUTPUT_FILE")
           echo "FILE_SIZE=$FILE_SIZE" >> $GITHUB_ENV
 
-          VIDEO_TITLE=$(yt-dlp "${COOKIE_ARGS[@]}" --print title "$URL" 2>/dev/null || echo "YouTube Video")
+          VIDEO_TITLE=""
+          set +e
+          VIDEO_TITLE=$(yt-dlp "${PLAYER_CLIENT_ARGS[@]}" "${COMMON_OPTS[@]}" --print title "$URL" 2>/dev/null)
+          if [ -z "$VIDEO_TITLE" ] && [ -f /tmp/yt-cookies.txt ]; then
+            VIDEO_TITLE=$(yt-dlp --cookies /tmp/yt-cookies.txt "${COMMON_OPTS[@]}" --print title "$URL" 2>/dev/null)
+          fi
+          set -e
+          if [ -z "$VIDEO_TITLE" ]; then
+            VIDEO_TITLE="YouTube Video"
+          fi
+
           echo "VIDEO_TITLE<<EOF" >> $GITHUB_ENV
           echo "$VIDEO_TITLE" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
