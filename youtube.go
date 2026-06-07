@@ -60,13 +60,22 @@ type ytdlpFormat struct {
 var videoQualityOrder = []string{"best", "1080", "720", "480", "360"}
 var audioQualityOrder = []string{"mp3", "m4a"}
 
+const ytdlpMaxCacheAge = 24 * time.Hour
+
 func FetchVideoInfo(ctx context.Context, cfg *Config, url string) (*VideoInfo, error) {
 	ytdlpPath, err := ResolveYTDLP(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	args := []string{"--dump-json", "--no-playlist", "--skip-download"}
+	args := []string{
+		"--dump-json",
+		"--no-playlist",
+		"--skip-download",
+		"--extractor-retries", "3",
+		"--retry-sleep", "extractor:3",
+		"--socket-timeout", "20",
+	}
 	cookiePath, cleanup, err := writeTempCookies(cfg)
 	if err != nil {
 		return nil, err
@@ -77,20 +86,26 @@ func FetchVideoInfo(ctx context.Context, cfg *Config, url string) (*VideoInfo, e
 	}
 	args = append(args, url)
 
-	cmd := exec.CommandContext(ctx, ytdlpPath, args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = err.Error()
+	stdout, err := runYTDLP(ctx, ytdlpPath, args)
+	if err != nil {
+		refreshedPath, refreshed, refreshErr := RefreshYTDLP(ctx, cfg)
+		if refreshed && refreshErr == nil {
+			if retryStdout, retryErr := runYTDLP(ctx, refreshedPath, args); retryErr == nil {
+				stdout = retryStdout
+				err = nil
+			} else {
+				err = fmt.Errorf("%w; retry after yt-dlp refresh failed: %v", err, retryErr)
+			}
+		} else if refreshErr != nil {
+			err = fmt.Errorf("%w; yt-dlp refresh failed: %v", err, refreshErr)
 		}
-		return nil, fmt.Errorf("yt-dlp metadata failed: %s", msg)
+	}
+	if err != nil {
+		return nil, err
 	}
 
 	var raw ytdlpInfo
-	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
+	if err := json.Unmarshal(stdout, &raw); err != nil {
 		return nil, fmt.Errorf("decode yt-dlp metadata: %w", err)
 	}
 	if raw.Title == "" {
@@ -108,6 +123,21 @@ func FetchVideoInfo(ctx context.Context, cfg *Config, url string) (*VideoInfo, e
 	return info, nil
 }
 
+func runYTDLP(ctx context.Context, ytdlpPath string, args []string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, ytdlpPath, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return nil, fmt.Errorf("yt-dlp metadata failed: %s", msg)
+	}
+	return stdout.Bytes(), nil
+}
+
 func ResolveYTDLP(ctx context.Context, cfg *Config) (string, error) {
 	if cfg != nil && strings.TrimSpace(cfg.YTDLPPath) != "" {
 		if _, err := os.Stat(cfg.YTDLPPath); err != nil {
@@ -118,66 +148,95 @@ func ResolveYTDLP(ctx context.Context, cfg *Config) (string, error) {
 	if path, err := exec.LookPath("yt-dlp"); err == nil {
 		return path, nil
 	}
+	path, _, err := resolveCachedYTDLP(ctx, false)
+	return path, err
+}
 
+func RefreshYTDLP(ctx context.Context, cfg *Config) (string, bool, error) {
+	if cfg != nil && strings.TrimSpace(cfg.YTDLPPath) != "" {
+		return cfg.YTDLPPath, false, nil
+	}
+	return resolveCachedYTDLP(ctx, true)
+}
+
+func resolveCachedYTDLP(ctx context.Context, forceRefresh bool) (string, bool, error) {
 	cacheDir, err := os.UserCacheDir()
 	if err != nil {
-		return "", fmt.Errorf("find user cache dir for yt-dlp: %w", err)
+		return "", false, fmt.Errorf("find user cache dir for yt-dlp: %w", err)
 	}
 	targetName, downloadURL, err := ytdlpDownloadTarget()
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 
 	dir := filepath.Join(cacheDir, "youtube-dl-bot")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", fmt.Errorf("create yt-dlp cache dir: %w", err)
+		return "", false, fmt.Errorf("create yt-dlp cache dir: %w", err)
 	}
 	path := filepath.Join(dir, targetName)
 	if stat, err := os.Stat(path); err == nil && stat.Size() > 0 {
-		return path, nil
+		if !forceRefresh && time.Since(stat.ModTime()) <= ytdlpMaxCacheAge {
+			return path, false, nil
+		}
+		if err := downloadYTDLP(ctx, downloadURL, path); err != nil {
+			if !forceRefresh {
+				return path, false, nil
+			}
+			return "", false, err
+		}
+		return path, true, nil
+	} else if err != nil && !os.IsNotExist(err) {
+		return "", false, fmt.Errorf("stat yt-dlp cache file: %w", err)
 	}
+	if err := downloadYTDLP(ctx, downloadURL, path); err != nil {
+		return "", false, err
+	}
+	return path, true, nil
+}
 
+func downloadYTDLP(ctx context.Context, downloadURL, path string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
-		return "", fmt.Errorf("create yt-dlp download request: %w", err)
+		return fmt.Errorf("create yt-dlp download request: %w", err)
 	}
 	req.Header.Set("User-Agent", "youtube-dl-bot")
 
 	client := &http.Client{Timeout: 2 * time.Minute}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("download yt-dlp: %w", err)
+		return fmt.Errorf("download yt-dlp: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("download yt-dlp failed with status %d", resp.StatusCode)
+		return fmt.Errorf("download yt-dlp failed with status %d", resp.StatusCode)
 	}
 
 	tmp := path + ".tmp"
 	file, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
 	if err != nil {
-		return "", fmt.Errorf("create yt-dlp file: %w", err)
+		return fmt.Errorf("create yt-dlp file: %w", err)
 	}
 	if _, err := io.Copy(file, resp.Body); err != nil {
 		_ = file.Close()
 		_ = os.Remove(tmp)
-		return "", fmt.Errorf("write yt-dlp file: %w", err)
+		return fmt.Errorf("write yt-dlp file: %w", err)
 	}
 	if err := file.Close(); err != nil {
 		_ = os.Remove(tmp)
-		return "", fmt.Errorf("close yt-dlp file: %w", err)
+		return fmt.Errorf("close yt-dlp file: %w", err)
 	}
 	if runtime.GOOS != "windows" {
 		if err := os.Chmod(tmp, 0o755); err != nil {
 			_ = os.Remove(tmp)
-			return "", fmt.Errorf("chmod yt-dlp file: %w", err)
+			return fmt.Errorf("chmod yt-dlp file: %w", err)
 		}
 	}
+	_ = os.Remove(path)
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
-		return "", fmt.Errorf("move yt-dlp file into cache: %w", err)
+		return fmt.Errorf("move yt-dlp file into cache: %w", err)
 	}
-	return path, nil
+	return nil
 }
 
 func ytdlpDownloadTarget() (string, string, error) {

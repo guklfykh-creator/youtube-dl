@@ -108,7 +108,7 @@ jobs:
             COOKIE_ARGS=(--cookies /tmp/yt-cookies.txt)
           fi
 
-          COMMON_OPTS=(--extractor-retries 3 --retry-sleep extractor=5 --no-progress)
+          COMMON_OPTS=(--extractor-retries 3 --retry-sleep extractor:5 --no-progress)
 
           if [ "$FORMAT" = "video" ]; then
             case "$QUALITY" in
